@@ -406,9 +406,9 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
         const col = slot % imposition.cols;
         const row = Math.floor(slot / imposition.cols);
 
-        const nudge = impositionConfig.slot_nudges?.[slot] || { dx_mm: 0, dy_mm: 0 };
-        const nudgeX = typeof nudge.dx_mm === 'number' ? nudge.dx_mm : 0;
-        const nudgeY = typeof nudge.dy_mm === 'number' ? nudge.dy_mm : 0;
+        const nudge = impositionConfig.slot_nudges?.[slot];
+        const nudgeX = nudge ? (nudge.nudge_x_mm ?? (nudge as any).dx_mm ?? 0) : 0;
+        const nudgeY = nudge ? (nudge.nudge_y_mm ?? (nudge as any).dy_mm ?? 0) : 0;
 
         const x = imposition.horizontal_offset_mm + col * (imposition.label_total_w_mm + gapX) + nudgeX;
         const y = imposition.vertical_offset_mm + row * (imposition.label_total_h_mm + gapY) + nudgeY;

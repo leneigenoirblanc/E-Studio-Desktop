@@ -31,11 +31,27 @@ export const desktopFileService = {
         return null;
       }
     }
+    if (typeof window !== 'undefined') {
+      try {
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = defaultFilename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        return defaultFilename;
+      } catch (err) {
+        console.error('Failed to trigger web download:', err);
+      }
+    }
     return null;
   },
 
   /**
-   * Save binary content (PDF, etc.) to local disk via native OS dialog
+   * Save binary content (PDF, etc.) to local disk via native OS dialog or browser download
    */
   async saveBinary(
     defaultFilename: string,
@@ -56,11 +72,28 @@ export const desktopFileService = {
         return null;
       }
     }
+
+    if (typeof window !== 'undefined') {
+      try {
+        const blob = new Blob([data as unknown as BlobPart]);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = defaultFilename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        return defaultFilename;
+      } catch (err) {
+        console.error('Failed to trigger web binary download:', err);
+      }
+    }
     return null;
   },
 
   /**
-   * Open and read a text/JSON file via native OS dialog
+   * Open and read a text/JSON file via native OS dialog or browser file picker
    */
   async openText(
     filters: FileFilter[] = [{ name: 'Fichier JSON', extensions: ['json'] }]
@@ -81,11 +114,31 @@ export const desktopFileService = {
         return null;
       }
     }
+
+    if (typeof document !== 'undefined') {
+      return new Promise((resolve) => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        const accept = filters.flatMap((f) => f.extensions.map((ext) => `.${ext}`)).join(',');
+        if (accept) input.accept = accept;
+        input.onchange = async () => {
+          const file = input.files?.[0];
+          if (!file) {
+            resolve(null);
+            return;
+          }
+          const content = await file.text();
+          resolve({ path: file.name, name: file.name, content });
+        };
+        input.click();
+      });
+    }
+
     return null;
   },
 
   /**
-   * Open and read binary file (e.g. XLSX / XLS) via native OS dialog
+   * Open and read binary file (e.g. XLSX / XLS) via native OS dialog or browser file picker
    */
   async openBinary(
     filters: FileFilter[] = [{ name: 'Feuille de calcul', extensions: ['xlsx', 'xls', 'csv'] }]
@@ -106,6 +159,26 @@ export const desktopFileService = {
         return null;
       }
     }
+
+    if (typeof document !== 'undefined') {
+      return new Promise((resolve) => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        const accept = filters.flatMap((f) => f.extensions.map((ext) => `.${ext}`)).join(',');
+        if (accept) input.accept = accept;
+        input.onchange = async () => {
+          const file = input.files?.[0];
+          if (!file) {
+            resolve(null);
+            return;
+          }
+          const buf = await file.arrayBuffer();
+          resolve({ path: file.name, name: file.name, data: new Uint8Array(buf) });
+        };
+        input.click();
+      });
+    }
+
     return null;
   },
 };
