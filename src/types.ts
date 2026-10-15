@@ -446,7 +446,7 @@ export function migrateTemplateSchema(raw: any): LabelTemplate {
   };
 }
 
-export type PrintJobStatus = 'draft' | 'ready' | 'sent' | 'failed';
+export type PrintJobStatus = 'ready' | 'sent' | 'failed';
 
 export interface PrintJob {
   id: string;
@@ -459,8 +459,12 @@ export interface PrintJob {
   status: PrintJobStatus;
   error: string | null;
   created_at: string;
+  schema_version?: number;
+  idempotency_key?: string;
   template_snapshot?: LabelTemplate;
+  products_snapshot?: ProductRecord[];
   printed_products?: Partial<ProductRecord>[];
+  artifact_sha256?: string | null;
 }
 
 export type AppView = 'home' | 'editor' | 'generation' | 'catalog';
@@ -474,10 +478,16 @@ export interface TemplateSummary {
   updated_at: string;
 }
 
+export interface UpsertRejection {
+  index: number;
+  reason: 'not_an_object' | 'missing_id' | 'invalid_price';
+}
+
 export interface UpsertResult {
   inserted: number;
   updated: number;
   rejected: number;
+  rejections: UpsertRejection[];
 }
 
 export interface AuditRecord {

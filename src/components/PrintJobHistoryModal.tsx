@@ -290,7 +290,6 @@ export const PrintJobHistoryModal: React.FC<PrintJobHistoryModalProps> = ({
                     }}
                     className="bg-slate-950 border border-slate-800 text-slate-300 rounded-lg text-xs px-2 py-1"
                   >
-                    <option value="draft">Brouillon</option>
                     <option value="ready">Prêt</option>
                     <option value="sent">Envoyé</option>
                     <option value="failed">Échec</option>

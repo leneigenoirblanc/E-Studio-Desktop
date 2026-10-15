@@ -41,34 +41,31 @@ function MainWorkspace() {
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const [isPreferencesOpen, setIsPreferencesOpen] = useState(false);
 
+  const loadTemplates = async () => {
+    try {
+      const summaries = await api.templateList();
+      const fullDocs = await Promise.all(
+        summaries.map(async (s) => {
+          try {
+            return await api.templateGet(s.id);
+          } catch {
+            return null;
+          }
+        })
+      );
+      const validDocs = fullDocs.filter((d): d is LabelTemplate => d !== null);
+      setTemplates(validDocs);
+      if (validDocs.length > 0) {
+        setActiveTemplate((prev) => prev || validDocs[0]);
+      }
+    } catch (err) {
+      console.warn('Failed to load templates from SQLite', err);
+    }
+  };
+
   // Load templates from SQLite on mount
   useEffect(() => {
-    let isMounted = true;
-    (async () => {
-      try {
-        const summaries = await api.templateList();
-        const fullDocs = await Promise.all(
-          summaries.map(async (s) => {
-            try {
-              return await api.templateGet(s.id);
-            } catch {
-              return null;
-            }
-          })
-        );
-        const validDocs = fullDocs.filter((d): d is LabelTemplate => d !== null);
-        if (!isMounted) return;
-        setTemplates(validDocs);
-        if (validDocs.length > 0) {
-          setActiveTemplate((prev) => prev || validDocs[0]);
-        }
-      } catch (err) {
-        console.warn('Failed to load templates from SQLite', err);
-      }
-    })();
-    return () => {
-      isMounted = false;
-    };
+    loadTemplates();
   }, []);
 
   // Subscribe to Navigation Service
@@ -277,6 +274,7 @@ function MainWorkspace() {
             onOpenFontManager={() => setIsFontManagerOpen(true)}
             onOpenMappingDictionary={() => setIsMappingDictOpen(true)}
             onOpenCatalog={() => handleNavigate('catalog')}
+            onRefreshTemplates={loadTemplates}
           />
         )}
 

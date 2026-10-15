@@ -107,10 +107,18 @@ export const api = {
     let inserted = 0;
     let updated = 0;
     let rejected = 0;
-    for (const r of rows) {
+    const rejections: { index: number; reason: 'not_an_object' | 'missing_id' | 'invalid_price' }[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r || typeof r !== 'object') {
+        rejected++;
+        rejections.push({ index: i, reason: 'not_an_object' });
+        continue;
+      }
       const id = String(r.id || r.PARTNO || r.PRODUCT_SCAN || '').trim();
       if (!id) {
         rejected++;
+        rejections.push({ index: i, reason: 'missing_id' });
         continue;
       }
       if (inMemoryStore.products.has(id)) {
@@ -120,7 +128,7 @@ export const api = {
       }
       inMemoryStore.products.set(id, { ...r, id });
     }
-    return { inserted, updated, rejected };
+    return { inserted, updated, rejected, rejections };
   },
 
   async catalogReplaceAll(rows: ProductRecord[]): Promise<number> {
@@ -245,4 +253,52 @@ export const api = {
     }
     return [...inMemoryStore.importBatches];
   },
+
+  async exportDatabase(): Promise<string> {
+    const summaries = await api.templateList();
+    const fullTemplates = await Promise.all(
+      summaries.map(async (s) => {
+        try {
+          return await api.templateGet(s.id);
+        } catch {
+          return null;
+        }
+      })
+    );
+    const validTemplates = fullTemplates.filter((t): t is LabelTemplate => t !== null);
+    const products = await api.catalogSearch('', 100000);
+    const jobs = await api.jobList();
+    const audit = await api.auditList(500);
+    const importBatches = await api.batchImportList();
+    const dump = {
+      version: 1,
+      exported_at: new Date().toISOString(),
+      templates: validTemplates,
+      products,
+      jobs,
+      audit,
+      import_batches: importBatches,
+    };
+    return JSON.stringify(dump, null, 2);
+  },
+
+  async importDatabase(jsonStr: string): Promise<{ templates: number; products: number }> {
+    const data = JSON.parse(jsonStr);
+    let tCount = 0;
+    let pCount = 0;
+    if (Array.isArray(data.templates)) {
+      for (const t of data.templates) {
+        if (t && t.id && t.name) {
+          await api.templateSave(t);
+          tCount++;
+        }
+      }
+    }
+    if (Array.isArray(data.products) && data.products.length > 0) {
+      await api.catalogUpsert(data.products);
+      pCount = data.products.length;
+    }
+    return { templates: tCount, products: pCount };
+  },
 };
+

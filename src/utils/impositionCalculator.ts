@@ -60,18 +60,18 @@ export class ImpositionCalculator {
     }
 
     // Number of columns & rows that fit in available printable space
-    const cols = Math.max(1, Math.floor((available_w + gap_x) / (label_total_w_mm + gap_x)));
-    const rows = Math.max(1, Math.floor((available_h + gap_y) / (label_total_h_mm + gap_y)));
+    const cols = Math.max(0, Math.floor((available_w + gap_x) / (label_total_w_mm + gap_x)));
+    const rows = Math.max(0, Math.floor((available_h + gap_y) / (label_total_h_mm + gap_y)));
 
-    const used_w = cols * label_total_w_mm + Math.max(0, cols - 1) * gap_x;
-    const used_h = rows * label_total_h_mm + Math.max(0, rows - 1) * gap_y;
+    const used_w = cols > 0 ? cols * label_total_w_mm + Math.max(0, cols - 1) * gap_x : 0;
+    const used_h = rows > 0 ? rows * label_total_h_mm + Math.max(0, rows - 1) * gap_y : 0;
 
     const calibX = config.calibration_x_mm || 0;
     const calibY = config.calibration_y_mm || 0;
 
     // Center within available margins or whole page
-    const horizontal_offset_mm = Math.max(0, marginLeft + (available_w - used_w) / 2 + calibX);
-    const vertical_offset_mm = Math.max(0, marginTop + (available_h - used_h) / 2 + calibY);
+    const horizontal_offset_mm = cols > 0 ? Math.max(0, marginLeft + (available_w - used_w) / 2 + calibX) : 0;
+    const vertical_offset_mm = rows > 0 ? Math.max(0, marginTop + (available_h - used_h) / 2 + calibY) : 0;
 
     return {
       page_w_mm: page_w,

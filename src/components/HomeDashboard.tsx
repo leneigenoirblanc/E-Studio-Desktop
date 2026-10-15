@@ -21,6 +21,7 @@ import {
 import { desktopFileService } from '../services/desktopFileService';
 import { PrintJobHistoryModal } from './PrintJobHistoryModal';
 import { PreFlightEngine } from '../utils/preFlightEngine';
+import { api } from '../services/api';
 
 interface HomeDashboardProps {
   templates: LabelTemplate[];
@@ -35,6 +36,7 @@ interface HomeDashboardProps {
   onOpenFontManager?: () => void;
   onOpenMappingDictionary?: () => void;
   onOpenCatalog?: () => void;
+  onRefreshTemplates?: () => void;
 }
 
 export const HomeDashboard: React.FC<HomeDashboardProps> = ({
@@ -50,9 +52,42 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
   onOpenFontManager,
   onOpenMappingDictionary,
   onOpenCatalog,
+  onRefreshTemplates,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [devTestResult, setDevTestResult] = useState<string | null>(null);
+  const [dbOpMessage, setDbOpMessage] = useState<string | null>(null);
+
+  const handleBackupDatabase = async () => {
+    try {
+      const dump = await api.exportDatabase();
+      const filename = `estudio_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      await desktopFileService.saveText(filename, dump, [
+        { name: 'Sauvegarde E-Studio (JSON)', extensions: ['json'] },
+      ]);
+      setDbOpMessage('Base sauvegardée avec succès (locale non chiffrée).');
+    } catch (err: any) {
+      setDbOpMessage(`Erreur de sauvegarde: ${err?.message || String(err)}`);
+    }
+  };
+
+  const handleRestoreDatabase = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const text = event.target?.result as string;
+        const res = await api.importDatabase(text);
+        setDbOpMessage(`Base restaurée (locale non chiffrée) : ${res.templates} gabarit(s), ${res.products} produit(s).`);
+        onRefreshTemplates?.();
+      } catch (err: any) {
+        setDbOpMessage(`Erreur de restauration: ${err?.message || String(err)}`);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
 
   const handleDevTestSQLite = async () => {
     try {
@@ -190,6 +225,24 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
             </label>
 
             <button
+              onClick={handleBackupDatabase}
+              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition"
+              title="Sauvegarder l'intégralité des données en fichier JSON (base locale non chiffrée)"
+            >
+              <Download className="w-3.5 h-3.5 text-blue-400" />
+              <span>Sauvegarder la base (locale non chiffrée)</span>
+            </button>
+
+            <label
+              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold rounded-xl flex items-center gap-1.5 cursor-pointer transition"
+              title="Restaurer les données depuis une sauvegarde JSON (base locale non chiffrée)"
+            >
+              <Upload className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Restaurer la base (locale non chiffrée)</span>
+              <input type="file" accept=".json" onChange={handleRestoreDatabase} className="hidden" />
+            </label>
+
+            <button
               onClick={handleDevTestSQLite}
               className="px-3 py-2 bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/40 text-amber-300 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition"
               title="Dev-only: Test SQLite template_save et template_get"
@@ -199,6 +252,18 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
             </button>
           </div>
         </div>
+
+        {dbOpMessage && (
+          <div className="mt-4 bg-slate-900 border border-blue-500/50 text-blue-200 text-xs px-4 py-2.5 rounded-xl flex items-center justify-between shadow-md">
+            <span>{dbOpMessage}</span>
+            <button
+              onClick={() => setDbOpMessage(null)}
+              className="text-slate-400 hover:text-white font-bold ml-4"
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {devTestResult && (
           <div className="mt-4 bg-slate-900 border border-amber-500/50 text-amber-200 text-xs px-4 py-2.5 rounded-xl flex items-center justify-between shadow-md">

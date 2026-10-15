@@ -19,6 +19,7 @@ import { ImpositionCalibrationBoard } from './ImpositionCalibrationBoard';
 import { MappingDictionaryModal } from './MappingDictionaryModal';
 import { ContextTooltip, useTooltip } from '../context/TooltipContext';
 import * as XLSX from 'xlsx';
+import { drawPdfItem } from '../render/drawPdfItem';
 import jsPDF from 'jspdf';
 import { desktopFileService } from '../services/desktopFileService';
 import { api } from '../services/api';
@@ -406,7 +407,7 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
         const col = slot % imposition.cols;
         const row = Math.floor(slot / imposition.cols);
 
-        const nudge = impositionConfig.slot_nudges?.[slot];
+        const nudge = impositionConfig.slot_nudges?.[slot] || (impositionConfig.slot_nudges as any)?.[String(slot)];
         const nudgeX = nudge ? (nudge.nudge_x_mm ?? (nudge as any).dx_mm ?? 0) : 0;
         const nudgeY = nudge ? (nudge.nudge_y_mm ?? (nudge as any).dy_mm ?? 0) : 0;
 
@@ -431,10 +432,6 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
             console.warn("Échec d'insertion image de fond dans le PDF :", err);
           }
         }
-
-        doc.setDrawColor(220, 226, 235);
-        doc.setLineWidth(0.15);
-        doc.rect(x, y, template.width_mm, template.height_mm, 'S');
 
         // Inner printable margins guide / crop marks
         if (impositionConfig.show_cut_marks) {

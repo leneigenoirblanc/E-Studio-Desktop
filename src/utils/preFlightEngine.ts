@@ -1,7 +1,7 @@
 import { LabelTemplate, TemplateItem, ProductRecord } from '../types';
-import { PricingEngine } from './pricingEngine';
+import { PricingEngine, isPriceRelatedElement } from './pricingEngine';
 import { validateEAN13 } from './barcodeGenerator';
-import { LabelResolutionEngine } from './labelResolutionEngine';
+import { ImpositionCalculator } from './impositionCalculator';
 
 export type PreFlightSeverity = 'error' | 'warning' | 'info';
 export type PreFlightCategory = 'geometry' | 'data' | 'barcode' | 'typography' | 'compatibility';
@@ -72,33 +72,38 @@ export class PreFlightEngine {
       });
     }
 
+    // Check if label fits on imposition sheet if default_imposition is configured
+    if (template.default_imposition) {
+      try {
+        const calc = ImpositionCalculator.calculate(
+          width,
+          height,
+          template.outer_margins_mm || { top: 0, bottom: 0, left: 0, right: 0 },
+          template.default_imposition
+        );
+        if (calc.cols === 0 || calc.rows === 0 || !calc.fits_on_page) {
+          issues.push({
+            id: 'imposition_page_overflow',
+            severity: 'error',
+            category: 'geometry',
+            message: `Étiquette (${width}×${height} mm) plus grande que la page utile de la planche d'imposition (${calc.page_w_mm}×${calc.page_h_mm} mm).`,
+          });
+        }
+      } catch (err: any) {
+        issues.push({
+          id: 'imposition_calc_error',
+          severity: 'error',
+          category: 'geometry',
+          message: `Erreur d'imposition : ${err.message}`,
+        });
+      }
+    }
+
     let hasPriceElement = false;
     let hasNameElement = false;
 
     template.items?.forEach((item: TemplateItem) => {
-      const itemRight = item.x_mm + item.w_mm;
-      const itemBottom = item.y_mm + item.h_mm;
       const label = item.type;
-
-      // Check strict outer label boundary overflow (Critical Error)
-      if (item.x_mm < 0 || item.y_mm < 0 || itemRight > width || itemBottom > height) {
-        issues.push({
-          id: `boundary_overflow_${item.id}`,
-          severity: 'error',
-          category: 'geometry',
-          message: `L'élément "${label}" dépasse la zone physique de l'étiquette (${itemRight.toFixed(1)}x${itemBottom.toFixed(1)} mm pour ${width}x${height} mm).`,
-          itemId: item.id,
-        });
-      } else if (item.x_mm < minX || item.y_mm < minY || itemRight > maxX || itemBottom > maxY) {
-        // Safe inner printable margin overflow (Warning)
-        issues.push({
-          id: `margin_overflow_${item.id}`,
-          severity: 'warning',
-          category: 'geometry',
-          message: `L'élément "${label}" dépasse les marges intérieures sécurisées (${itemRight.toFixed(1)}x${itemBottom.toFixed(1)} mm).`,
-          itemId: item.id,
-        });
-      }
 
       // Check zero or negative dimensions
       if (item.w_mm <= 0 || item.h_mm <= 0) {
@@ -111,42 +116,259 @@ export class PreFlightEngine {
         });
       }
 
-      // Typography checks
+      // Compute bounding box after rotation around center
+      const deg = item.rotation || 0;
+      const rad = (deg * Math.PI) / 180;
+      const rotW = Math.abs(item.w_mm * Math.cos(rad)) + Math.abs(item.h_mm * Math.sin(rad));
+      const rotH = Math.abs(item.w_mm * Math.sin(rad)) + Math.abs(item.h_mm * Math.cos(rad));
+      const centerX = item.x_mm + item.w_mm / 2;
+      const centerY = item.y_mm + item.h_mm / 2;
+      const bbLeft = centerX - rotW / 2;
+      const bbRight = centerX + rotW / 2;
+      const bbTop = centerY - rotH / 2;
+      const bbBottom = centerY + rotH / 2;
+
+      // Outer label boundary overflow (critical error)
+      if (bbLeft < -0.05 || bbTop < -0.05 || bbRight > width + 0.05 || bbBottom > height + 0.05) {
+        issues.push({
+          id: `boundary_overflow_${item.id}`,
+          severity: 'error',
+          category: 'geometry',
+          message: `L'élément "${label}" dépasse la zone physique de l'étiquette (${bbRight.toFixed(1)}x${bbBottom.toFixed(1)} mm pour ${width}x${height} mm).`,
+          itemId: item.id,
+        });
+      } else if (bbLeft < minX - 0.05 || bbTop < minY - 0.05 || bbRight > maxX + 0.05 || bbBottom > maxY + 0.05) {
+        // Safe inner printable margin overflow
+        issues.push({
+          id: `margin_overflow_${item.id}`,
+          severity: target === 'screen' ? 'warning' : 'error',
+          category: 'geometry',
+          message: `L'élément "${label}" dépasse les marges intérieures sécurisées (${bbRight.toFixed(1)}x${bbBottom.toFixed(1)} mm).`,
+          itemId: item.id,
+        });
+      }
+
+      // Check restricted_area overlap with other non-restricted elements
+      if (item.type === 'restricted_area' && (item as any).warn_on_overlap) {
+        template.items?.forEach((other) => {
+          if (other.id === item.id || other.type === 'restricted_area') return;
+          const overlap = !(
+            other.x_mm >= item.x_mm + item.w_mm ||
+            other.x_mm + other.w_mm <= item.x_mm ||
+            other.y_mm >= item.y_mm + item.h_mm ||
+            other.y_mm + other.h_mm <= item.y_mm
+          );
+          if (overlap) {
+            issues.push({
+              id: `restricted_area_overlap_${item.id}_${other.id}`,
+              severity: target === 'screen' ? 'warning' : 'error',
+              category: 'geometry',
+              message: `L'élément "${other.type}" (${other.id}) chevauche la zone réservée "${(item as any).label || 'Zone restreinte'}".`,
+              itemId: other.id,
+            });
+          }
+        });
+      }
+
+      // Font size < 6 pt checks
       if (item.type === 'text') {
-        const fontSize = item.font_size_pt || 12;
-        if (fontSize < 5) {
+        const fontSize = (item as any).font_size_pt || 12;
+        if (fontSize < 6) {
           issues.push({
             id: `font_too_small_${item.id}`,
-            severity: 'warning',
+            severity: 'error',
             category: 'typography',
-            message: `Taille de police très réduite (${fontSize} pt) sur l'élément texte. Risque d'illisibilité en rayon.`,
+            message: `Corps de police inférieur à 6 pt (${fontSize} pt) sur l'élément texte. Refusé pour lisibilité légale.`,
+            itemId: item.id,
+          });
+        }
+      } else if (item.type === 'rich_text') {
+        const defaultPt = (item as any).default_font_size_pt || 10;
+        if (defaultPt < 6) {
+          issues.push({
+            id: `font_too_small_${item.id}`,
+            severity: 'error',
+            category: 'typography',
+            message: `Corps de police inférieur à 6 pt (${defaultPt} pt) sur le texte enrichi.`,
+            itemId: item.id,
+          });
+        }
+        (item as any).runs?.forEach((r: any, rIdx: number) => {
+          if (r.font_size_pt && r.font_size_pt < 6) {
+            issues.push({
+              id: `font_too_small_run_${item.id}_${rIdx}`,
+              severity: 'error',
+              category: 'typography',
+              message: `Segment de texte enrichi avec corps inférieur à 6 pt (${r.font_size_pt} pt).`,
+              itemId: item.id,
+            });
+          }
+        });
+      } else if (item.type === 'curved_text') {
+        const fontSize = (item as any).font_size_pt || 12;
+        if (fontSize < 6) {
+          issues.push({
+            id: `font_too_small_${item.id}`,
+            severity: 'error',
+            category: 'typography',
+            message: `Corps de police inférieur à 6 pt (${fontSize} pt) sur le texte courbé.`,
+            itemId: item.id,
+          });
+        }
+      } else if (item.type === 'tier_price') {
+        const fontSize = (item as any).font_size_pt || 10;
+        if (fontSize < 6) {
+          issues.push({
+            id: `font_too_small_${item.id}`,
+            severity: 'error',
+            category: 'typography',
+            message: `Corps de police inférieur à 6 pt (${fontSize} pt) sur le bloc de paliers.`,
+            itemId: item.id,
+          });
+        }
+      } else if (item.type === 'price_block') {
+        const intPt = (item as any).integer_style?.font_size_pt;
+        if (intPt !== undefined && intPt < 6) {
+          issues.push({
+            id: `font_too_small_${item.id}`,
+            severity: 'error',
+            category: 'typography',
+            message: `Corps de la partie entière du prix inférieur à 6 pt (${intPt} pt).`,
             itemId: item.id,
           });
         }
       }
 
+      // Barcode checks: contrast, width, and valid checksum
+      if (item.type === 'barcode') {
+        const barcodeType = (item as any).barcode_type || 'ean13';
+        const isSample = target === 'screen';
+        const rawBarcode = PricingEngine.resolveBarcodeValue(item, sampleProduct, { sample: isSample });
+
+        // Barcode contrast: bars must be strictly black
+        const barColor = String((item as any).bar_color || '#000000').toLowerCase().trim();
+        const isBlack = ['#000000', '#000', 'black', 'rgb(0,0,0)', 'rgb(0, 0, 0)'].includes(barColor);
+        if (!isBlack) {
+          issues.push({
+            id: `barcode_contrast_bars_${item.id}`,
+            severity: 'error',
+            category: 'barcode',
+            message: `Contraste code-barres insuffisant : les barres doivent être strictement noires (actuel: "${barColor}").`,
+            itemId: item.id,
+          });
+        }
+
+        // Minimal width for EAN-13 (nominal 37.29 mm at 100%, minimum 80% = 29.83 mm)
+        if (barcodeType === 'ean13' && item.w_mm < 29.83) {
+          issues.push({
+            id: `barcode_min_width_${item.id}`,
+            severity: 'error',
+            category: 'barcode',
+            message: `Largeur EAN-13 insuffisante (${item.w_mm.toFixed(1)} mm < 29.83 mm). Risque de rejet aux caisses optiques.`,
+            itemId: item.id,
+          });
+        }
+
+        if (!rawBarcode || rawBarcode.trim().length === 0) {
+          if (target !== 'screen') {
+            issues.push({
+              id: `empty_barcode_${item.id}`,
+              severity: 'error',
+              category: 'barcode',
+              message: `Code-barres vide sur l'élément (${item.binding_key || 'code statique'}). Aucun code de démonstration n'est utilisé à l'export.`,
+              itemId: item.id,
+            });
+          }
+        } else if (barcodeType === 'ean13') {
+          const validation = validateEAN13(rawBarcode);
+          if (!validation.valid) {
+            issues.push({
+              id: `ean_invalid_${item.id}`,
+              severity: 'error',
+              category: 'barcode',
+              message: `Code EAN-13 invalide : ${validation.reason}`,
+              itemId: item.id,
+            });
+          }
+        }
+      }
+
       // Target compatibility checks
       if (target === 'zpl') {
-        const zplUnsupported = ['image', 'rich_text', 'curved_text', 'pictogram', 'tier_price', 'ellipse', 'restricted_area'];
+        const zplUnsupported = ['rich_text', 'curved_text', 'image', 'pictogram', 'ellipse', 'restricted_area'];
         if (zplUnsupported.includes(item.type)) {
           issues.push({
             id: `zpl_unsupported_${item.id}`,
             severity: 'error',
             category: 'compatibility',
-            message: `L'élément de type "${item.type}" n'est pas représentable en impression thermique ZPL.`,
+            message: `L'élément de type "${item.type}" n'est pas représentable en impression thermique directe ZPL.`,
+            itemId: item.id,
+          });
+        }
+
+        // ZPL price_block check: decimal baseline shift must be normal
+        if (item.type === 'price_block') {
+          const shift = (item as any).decimal_style?.baseline_shift;
+          if (shift && shift !== 'normal') {
+            issues.push({
+              id: `zpl_price_superscript_${item.id}`,
+              severity: 'error',
+              category: 'compatibility',
+              message: `Le bloc de prix avec décimales en exposant/indice n'est pas géré en ZPL simple sans matrice bitmap.`,
+              itemId: item.id,
+            });
+          }
+        }
+
+        // Advanced styling unrepresentable in ZPL
+        if ((item as any).text_shadow?.enabled) {
+          issues.push({
+            id: `zpl_unsupported_shadow_${item.id}`,
+            severity: 'error',
+            category: 'compatibility',
+            message: `L'effet d'ombre portée n'est pas représentable en impression thermique ZPL.`,
+            itemId: item.id,
+          });
+        }
+        if ((item as any).highlight_color && (item as any).highlight_color !== 'transparent') {
+          issues.push({
+            id: `zpl_unsupported_highlight_${item.id}`,
+            severity: 'error',
+            category: 'compatibility',
+            message: `Le surlignage couleur n'est pas représentable en impression thermique monochrome ZPL.`,
+            itemId: item.id,
+          });
+        }
+        if ((item as any).finish_effect && (item as any).finish_effect !== 'none') {
+          issues.push({
+            id: `zpl_unsupported_finish_${item.id}`,
+            severity: 'error',
+            category: 'compatibility',
+            message: `Les finitions d'impression (${(item as any).finish_effect}) ne sont pas gérées en thermique ZPL.`,
             itemId: item.id,
           });
         }
       } else if (target === 'pdf') {
-        const pdfUnsupported = ['rich_text', 'curved_text', 'image', 'restricted_area'];
-        if (pdfUnsupported.includes(item.type)) {
+        if (item.type === 'curved_text') {
           issues.push({
-            id: `pdf_unsupported_${item.id}`,
+            id: `pdf_unsupported_curved_${item.id}`,
             severity: 'error',
             category: 'compatibility',
-            message: `L'élément de type "${item.type}" n'est pas représentable en export PDF vectoriel.`,
+            message: `Le texte courbé n'est pas supporté en export PDF vectoriel dans cette version.`,
             itemId: item.id,
           });
+        }
+        if (item.type === 'image') {
+          const src = (item as any).source;
+          if (!src || typeof src !== 'string' || !src.startsWith('data:image/')) {
+            issues.push({
+              id: `pdf_unsupported_image_${item.id}`,
+              severity: 'error',
+              category: 'compatibility',
+              message: `L'image n'est pas une data-URL valide (requis: data:image/...).`,
+              itemId: item.id,
+            });
+          }
         }
       } else if (target === 'pptx') {
         const pptxUnsupported = ['rich_text', 'curved_text', 'restricted_area'];
@@ -165,57 +387,25 @@ export class PreFlightEngine {
       if (
         item.type === 'price_block' ||
         item.type === 'tier_price' ||
-        PricingEngine.isPriceRelated(item) ||
-        item.binding_key === 'SELLING_PRICE' ||
-        item.binding_key === 'PROMOPRICE'
+        isPriceRelatedElement(item)
       ) {
         hasPriceElement = true;
       }
 
-      // Designation / Item Name identification
+      // Designation identification
       if (
         item.binding_key === 'ITEMNAME' ||
-        (item.type === 'text' && item.text && item.text.toLowerCase().includes('designation'))
+        (item.type === 'text' && (item as any).text && (item as any).text.toLowerCase().includes('designation'))
       ) {
         hasNameElement = true;
       }
-
-      // Barcode element checks
-      if (item.type === 'barcode') {
-        const barcodeType = item.barcode_type || 'ean13';
-        const isSample = target === 'screen';
-        const rawBarcode = PricingEngine.resolveBarcodeValue(item, sampleProduct, { sample: isSample });
-
-        if (!rawBarcode || rawBarcode.trim().length === 0) {
-          if (target !== 'screen') {
-            issues.push({
-              id: `empty_barcode_${item.id}`,
-              severity: 'error',
-              category: 'barcode',
-              message: `Code-barres vide sur l'élément (${item.binding_key || 'code statique'}).`,
-              itemId: item.id,
-            });
-          }
-        } else if (barcodeType === 'ean13') {
-          const validation = validateEAN13(rawBarcode);
-          if (!validation.valid) {
-            issues.push({
-              id: `ean_invalid_${item.id}`,
-              severity: 'error',
-              category: 'barcode',
-              message: `Code EAN-13 invalide : ${validation.reason}`,
-              itemId: item.id,
-            });
-          }
-        }
-      }
     });
 
-    // Mandatory retail price field: Must be present on the label!
+    // Mandatory retail price check
     if (!hasPriceElement) {
       issues.push({
         id: 'missing_price',
-        severity: 'error',
+        severity: target === 'screen' ? 'warning' : 'error',
         category: 'data',
         message: 'Aucun champ de prix (SELLING_PRICE, bloc prix ou palier) lié dans ce gabarit étiquette.',
       });
@@ -231,7 +421,7 @@ export class PreFlightEngine {
       });
     }
 
-    // Promo date checks and price presence on product record
+    // Product record validations
     if (sampleProduct) {
       if (hasPriceElement && target !== 'screen') {
         const sp = PricingEngine.getSellingPrice(sampleProduct);
@@ -291,94 +481,6 @@ export class PreFlightEngine {
     };
   }
 
-  /**
-   * Exhaustively evaluates every single product in the batch against the template and target,
-   * guaranteeing that product #257 with an absent price or product #1200 with an invalid EAN
-   * is detected and blocks the export before any physical job is created.
-   */
-  static analyzeBatch(
-    template: LabelTemplate,
-    products: ProductRecord[],
-    target: PreFlightTarget = 'screen'
-  ): BatchPreFlightReport {
-    // 1. Base template structure analysis
-    const baseReport = PreFlightEngine.analyzeTemplate(template, products[0], target);
-    const issues = [...baseReport.issues];
-    let defectiveProductsCount = 0;
-
-    if (!products || products.length === 0) {
-      return {
-        ...baseReport,
-        totalProductsChecked: 0,
-        defectiveProductsCount: 0,
-      };
-    }
-
-    // 2. Iterate through every product in the batch using LabelResolutionEngine
-    const maxProductIssuesToReport = 25;
-    let productIssuesRecorded = 0;
-
-    for (let idx = 0; idx < products.length; idx++) {
-      const p = products[idx];
-      const resolved = LabelResolutionEngine.resolveLabel(template, p, target, { sample: false });
-      const productErrors = resolved.issues.filter((i) => i.severity === 'error');
-
-      if (productErrors.length > 0) {
-        defectiveProductsCount++;
-        if (productIssuesRecorded < maxProductIssuesToReport) {
-          for (const err of productErrors) {
-            const issueId = `${err.id}_p${idx}`;
-            if (!issues.some((i) => i.id === issueId)) {
-              issues.push({
-                id: issueId,
-                severity: err.severity,
-                category: err.category,
-                message: `[Ligne #${idx + 1} - ${p.ITEMNAME || p.PARTNO || p.PRODUCT_SCAN || p.id}] ${err.message}`,
-                itemId: err.itemId,
-                field: err.productIdentifier,
-              });
-              productIssuesRecorded++;
-            }
-          }
-        }
-      }
-    }
-
-    if (defectiveProductsCount > maxProductIssuesToReport) {
-      issues.push({
-        id: 'overflow_batch_errors',
-        severity: 'error',
-        category: 'data',
-        message: `+ ${defectiveProductsCount - maxProductIssuesToReport} autre(s) article(s) présentant des erreurs bloquantes dans le lot.`,
-      });
-    }
-
-    const errorsCount = issues.filter((i) => i.severity === 'error').length;
-    const warningsCount = issues.filter((i) => i.severity === 'warning').length;
-    const infosCount = issues.filter((i) => i.severity === 'info').length;
-
-    let status: ComputedTemplateStatus = 'ready';
-    if (errorsCount > 0) {
-      status = 'draft';
-    } else if (warningsCount > 0) {
-      status = 'warning';
-    }
-
-    return {
-      status,
-      errorsCount,
-      warningsCount,
-      infosCount,
-      issues,
-      passed: errorsCount === 0,
-      totalProductsChecked: products.length,
-      defectiveProductsCount,
-    };
-  }
-
-  /**
-   * Fast computed status getter without full report overhead
-   */
   static computeTemplateStatus(
     template: LabelTemplate,
     sampleProduct?: ProductRecord,
