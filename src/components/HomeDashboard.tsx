@@ -15,7 +15,12 @@ import {
   BookOpen,
   FileSpreadsheet,
   Cpu,
+  Database,
+  History,
 } from 'lucide-react';
+import { desktopFileService } from '../services/desktopFileService';
+import { PrintJobHistoryModal } from './PrintJobHistoryModal';
+import { PreFlightEngine } from '../utils/preFlightEngine';
 
 interface HomeDashboardProps {
   templates: LabelTemplate[];
@@ -23,7 +28,7 @@ interface HomeDashboardProps {
   onSelectTemplateToGenerate: (template: LabelTemplate) => void;
   onOpenNewWizard: () => void;
   onDuplicateTemplate: (template: LabelTemplate) => void;
-  onDeleteTemplate: (templateName: string) => void;
+  onDeleteTemplate: (templateId: string) => void;
   onImportTemplate: (template: LabelTemplate) => void;
   onOpenRulesModal: () => void;
   onOpenAuditLogs?: () => void;
@@ -47,10 +52,47 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
   onOpenCatalog,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  const [devTestResult, setDevTestResult] = useState<string | null>(null);
+
+  const handleDevTestSQLite = async () => {
+    try {
+      const testId = `dev_test_${Date.now()}`;
+      const sampleDoc: LabelTemplate = {
+        id: testId,
+        schema_version: 1,
+        revision: 1,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        name: 'Gabarit Test SQLite',
+        width_mm: 80,
+        height_mm: 40,
+        inner_margins_mm: { top: 2, bottom: 2, left: 2, right: 2 },
+        outer_margins_mm: { top: 1, bottom: 1, left: 1, right: 1 },
+        bg_color: '#FFFFFF',
+        bg_opacity: 1,
+        items: [],
+      };
+
+      const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+      if (isTauri) {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const saved = await invoke<LabelTemplate>('template_save', { doc: sampleDoc });
+        const retrieved = await invoke<LabelTemplate>('template_get', { id: saved.id });
+        setDevTestResult(`✅ SQLite vérifié (Tauri IPC): ${retrieved.name} [id=${retrieved.id}, rev=${retrieved.revision}]`);
+      } else {
+        setDevTestResult(`ℹ️ SQLite Tauri prêt: commandes 'template_save' & 'template_get' configurées`);
+      }
+    } catch (err: any) {
+      setDevTestResult(`❌ Erreur SQLite: ${err?.message || String(err)}`);
+    }
+  };
 
   const filteredTemplates = templates.filter((t) =>
     t.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  const [importError, setImportError] = useState<string | null>(null);
+  const [showJobHistory, setShowJobHistory] = useState(false);
 
   const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -60,25 +102,25 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
       try {
         const json = JSON.parse(event.target?.result as string);
         if (json && json.name && json.width_mm && json.height_mm) {
+          setImportError(null);
           onImportTemplate(json);
         } else {
-          alert('Fichier JSON de gabarit invalide (propriétés manquantes).');
+          setImportError('Fichier JSON de gabarit invalide (propriétés manquantes).');
         }
       } catch (err) {
-        alert('Erreur lors de la lecture du fichier JSON: ' + String(err));
+        setImportError('Erreur lors de la lecture du fichier JSON: ' + String(err));
       }
     };
     reader.readAsText(file);
+    e.target.value = '';
   };
 
-  const handleExportTemplate = (template: LabelTemplate) => {
-    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(template, null, 2));
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute('href', dataStr);
-    downloadAnchor.setAttribute('download', `gabarit_${template.name.replace(/\s+/g, '_')}.json`);
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
+  const handleExportTemplate = async (template: LabelTemplate) => {
+    const dataStr = JSON.stringify(template, null, 2);
+    const filename = `gabarit_${template.name.replace(/\s+/g, '_')}.json`;
+    await desktopFileService.saveText(filename, dataStr, [
+      { name: 'Gabarit E-Studio', extensions: ['json'] },
+    ]);
   };
 
   return (
@@ -106,6 +148,15 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
             >
               <FileSpreadsheet className="w-4 h-4" />
               <span>Catalogue & Import</span>
+            </button>
+
+            <button
+              onClick={() => setShowJobHistory(true)}
+              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition"
+              title="Consulter l'historique des travaux d'impression et le spooler SQLite"
+            >
+              <History className="w-3.5 h-3.5 text-purple-400" />
+              <span>Spooler</span>
             </button>
 
             <button
@@ -137,8 +188,29 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
               <span>Importer JSON</span>
               <input type="file" accept=".json" onChange={handleImportFile} className="hidden" />
             </label>
+
+            <button
+              onClick={handleDevTestSQLite}
+              className="px-3 py-2 bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/40 text-amber-300 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition"
+              title="Dev-only: Test SQLite template_save et template_get"
+            >
+              <Database className="w-3.5 h-3.5" />
+              <span>Dev: Test SQLite</span>
+            </button>
           </div>
         </div>
+
+        {devTestResult && (
+          <div className="mt-4 bg-slate-900 border border-amber-500/50 text-amber-200 text-xs px-4 py-2.5 rounded-xl flex items-center justify-between shadow-md">
+            <span>{devTestResult}</span>
+            <button
+              onClick={() => setDevTestResult(null)}
+              className="text-slate-400 hover:text-white font-bold ml-4"
+            >
+              ✕
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Main Content Area */}
@@ -208,7 +280,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {filteredTemplates.map((template) => (
               <div
-                key={template.name}
+                key={template.id}
                 className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-2xl p-5 shadow-sm transition-all flex flex-col justify-between group"
               >
                 <div>
@@ -218,12 +290,23 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                     </h3>
                   </div>
 
-                  {/* Dimensions badge */}
-                  <div className="flex items-center gap-2 mb-4 text-[11px] font-mono text-slate-400">
+                  {/* Dimensions & Computed Status */}
+                  <div className="flex items-center justify-between mb-4 text-[11px] font-mono text-slate-400">
                     <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800">
                       {template.width_mm} × {template.height_mm} mm
                     </span>
-                    <span>{template.items?.length || 0} éléments</span>
+                    <div className="flex items-center gap-1.5 font-sans">
+                      {(() => {
+                        const status = PreFlightEngine.computeTemplateStatus(template);
+                        if (status === 'ready') {
+                          return <span className="text-emerald-400 font-semibold text-[11px]">● Prêt</span>;
+                        }
+                        if (status === 'warning') {
+                          return <span className="text-amber-400 font-semibold text-[11px]">● À vérifier</span>;
+                        }
+                        return <span className="text-slate-500 font-semibold text-[11px]">● Brouillon</span>;
+                      })()}
+                    </div>
                   </div>
 
                   {/* Mini Preview Box */}
@@ -254,7 +337,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                     <button
                       onClick={() => {
                         if (confirm(`Supprimer le gabarit "${template.name}" ?`)) {
-                          onDeleteTemplate(template.name);
+                          onDeleteTemplate(template.id);
                         }
                       }}
                       className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-950/30 rounded-lg transition"
@@ -286,6 +369,11 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
           </div>
         )}
       </div>
+
+      <PrintJobHistoryModal
+        isOpen={showJobHistory}
+        onClose={() => setShowJobHistory(false)}
+      />
     </div>
   );
 };

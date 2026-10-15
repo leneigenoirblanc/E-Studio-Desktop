@@ -109,7 +109,6 @@ export const TierPricingStudio: React.FC<TierPricingStudioProps> = ({
   // Run Implicit multi-row ingestion
   const handleRunImplicitAggregation = () => {
     if (!products || products.length === 0) {
-      alert('Veuillez d\'abord charger ou importer des articles dans le catalogue.');
       setShowImplicitModal(false);
       return;
     }

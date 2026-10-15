@@ -418,16 +418,15 @@ export interface ImpositionConfig {
 export interface LabelTemplate {
   id: string;
   name: string;
-  widthMm: number;
-  heightMm: number;
-  margins: TemplateMargins;
-  backgroundColor: string;
-  defaultImposition: ImpositionConfig;
+  width_mm: number;
+  height_mm: number;
+  inner_margins_mm: Margins;
+  bg_color: string;
+  default_imposition?: ImpositionConfig;
   items: TemplateItem[];
-  version: number;
-  updatedAt: string;
-  createdAt: string;
-  status: TemplateStatus;
+  revision: number;
+  updated_at: string;
+  created_at: string;
 }
 ```
 
@@ -451,15 +450,15 @@ export interface TemplateItemBase {
   id: string;
   type: TemplateItemType;
   name: string;
-  xMm: number;
-  yMm: number;
-  widthMm: number;
-  heightMm: number;
-  rotationDeg: number;
-  zIndex: number;
+  x_mm: number;
+  y_mm: number;
+  w_mm: number;
+  h_mm: number;
+  rotation: number;
+  z_index: number;
   locked: boolean;
-  bindingKey?: string;
-  conditionalDisplay?: ConditionalDisplayRule;
+  binding_key?: string;
+  conditional_display?: ConditionalDisplayConfig;
 }
 
 export interface TemplateItem extends TemplateItemBase {

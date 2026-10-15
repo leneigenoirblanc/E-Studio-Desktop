@@ -70,27 +70,14 @@ export const COMMON_HEADER_KEYWORDS = [
   'dept',
 ];
 
+import { PricingEngine } from './pricingEngine';
+
 /**
  * Sanitizes dirty numeric prices ("12,50 €", "12.50€", "12 500 FCFA", "12,50", "12.50 EUR")
+ * uses unified PricingEngine.parsePriceNumber logic.
  */
 export function sanitizePriceValue(val: any): number {
-  if (typeof val === 'number') return isNaN(val) ? 0 : val;
-  if (!val) return 0;
-
-  let str = String(val).trim();
-  // Remove currency symbols, units and letter words
-  str = str.replace(/[€$£a-zA-Z\s]/g, '');
-
-  // Handle European comma vs dot (e.g. 12,50 -> 12.50)
-  if (str.includes(',') && !str.includes('.')) {
-    str = str.replace(',', '.');
-  } else if (str.includes(',') && str.includes('.')) {
-    // e.g. 1,250.50 -> 1250.50
-    str = str.replace(/,/g, '');
-  }
-
-  const num = parseFloat(str);
-  return isNaN(num) ? 0 : num;
+  return PricingEngine.parsePriceNumber(val);
 }
 
 /**

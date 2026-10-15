@@ -1,4 +1,5 @@
-export type AppView = 'home' | 'editor' | 'generation' | 'catalog';
+import { AppView } from '../types';
+export type { AppView };
 
 export interface RouteState {
   view: AppView;

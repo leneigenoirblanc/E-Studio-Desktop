@@ -1,11 +1,6 @@
-import { TemplateItem, LabelTemplate } from '../types';
+import { TemplateItem, LabelTemplate, ElementPlacementStrategy } from '../types';
 
-export type ElementPlacementStrategy =
-  | 'ergonomic_smart'
-  | 'smart_cascade'
-  | 'zone_semantic'
-  | 'canvas_center'
-  | 'fixed_classic';
+export type { ElementPlacementStrategy };
 
 export interface PlacementParams {
   itemType: TemplateItem['type'] | string;

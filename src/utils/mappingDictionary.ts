@@ -1,4 +1,5 @@
 import { ExtendedDomainField, DOMAIN_FIELDS as BASE_DOMAIN_FIELDS } from '../domainFields';
+import { api } from '../services/api';
 
 export interface FieldAliasDefinition {
   key: string;
@@ -22,8 +23,6 @@ export interface MatchResult {
   matched_token?: string;
   explanation?: string;
 }
-
-const STORAGE_KEY = 'estudio_mapping_dictionary_v2';
 
 // Clean text for agnostic matching (removes accents, spaces, special chars, uppercase)
 export function normalizeToken(input: string): string {
@@ -107,51 +106,48 @@ class MappingDictionaryManager {
   }
 
   private load() {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
+    this.dictionary = createInitialDictionary();
+    api.prefsGet('mapping_dictionary').then((saved) => {
       if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          // Merge with initial defaults in case new system fields were added
-          const initial = createInitialDictionary();
-          const savedMap = new Map<string, any>(parsed.map(p => [p.key, p]));
+        try {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const initial = createInitialDictionary();
+            const savedMap = new Map<string, any>(parsed.map(p => [p.key, p]));
 
-          const merged: FieldAliasDefinition[] = initial.map(initDef => {
-            const userSaved = savedMap.get(initDef.key);
-            if (userSaved) {
-              return {
-                ...initDef,
-                custom_aliases: Array.isArray(userSaved.custom_aliases) ? userSaved.custom_aliases : [],
-                keywords: Array.from(new Set([...initDef.keywords, ...(userSaved.keywords || [])])),
-              };
-            }
-            return initDef;
-          });
+            const merged: FieldAliasDefinition[] = initial.map(initDef => {
+              const userSaved = savedMap.get(initDef.key);
+              if (userSaved) {
+                return {
+                  ...initDef,
+                  custom_aliases: Array.isArray(userSaved.custom_aliases) ? userSaved.custom_aliases : [],
+                  keywords: Array.from(new Set([...initDef.keywords, ...(userSaved.keywords || [])])),
+                };
+              }
+              return initDef;
+            });
 
-          // Also include any user-created custom fields
-          for (const item of parsed) {
-            if (item.is_custom_field && !merged.some(m => m.key === item.key)) {
-              merged.push(item);
+            for (const item of parsed) {
+              if (item.is_custom_field && !merged.some(m => m.key === item.key)) {
+                merged.push(item);
+              }
             }
+
+            this.dictionary = merged;
+            this.notify();
           }
-
-          this.dictionary = merged;
-          return;
+        } catch (e) {
+          console.error('Failed to parse mapping dictionary from SQLite kv', e);
         }
       }
-    } catch (e) {
-      console.error('Failed to load mapping dictionary from storage', e);
-    }
-    this.dictionary = createInitialDictionary();
+    }).catch(() => {});
   }
 
   private save() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.dictionary));
-      this.notify();
-    } catch (e) {
-      console.error('Failed to persist mapping dictionary', e);
-    }
+    api.prefsSet('mapping_dictionary', JSON.stringify(this.dictionary)).catch((e) => {
+      console.error('Failed to persist mapping dictionary to SQLite kv', e);
+    });
+    this.notify();
   }
 
   private notify() {

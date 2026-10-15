@@ -184,7 +184,7 @@ export const ImpositionCalibrationBoard: React.FC<ImpositionCalibrationBoardProp
         const preset = ImpositionPresetsManager.parsePresetJson(text);
         handleApplyPreset(preset);
       } catch (err: any) {
-        alert(`Erreur d'importation JSON : ${err.message}`);
+        console.error(`Erreur d'importation JSON : ${err.message}`);
       }
     };
     reader.readAsText(file);

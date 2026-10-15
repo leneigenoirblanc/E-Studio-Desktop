@@ -89,7 +89,7 @@ export const DataMappingModal: React.FC<DataMappingModalProps> = ({
         });
       }, 3500);
     } else {
-      alert(res.message || "Impossible d'enregistrer l'alias.");
+      console.warn(res.message || "Impossible d'enregistrer l'alias.");
     }
   };
 

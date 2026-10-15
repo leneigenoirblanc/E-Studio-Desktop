@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { TooltipSettings, ZoomMethod, RotationHandleType, ElementPlacementStrategy } from '../types';
+import { api } from '../services/api';
 
 export interface RulerSettings {
   showHorizontal: boolean;
@@ -79,76 +80,67 @@ const DEFAULT_UI_PREFERENCES: UIPreferences = {
 const TooltipContext = createContext<TooltipContextType | undefined>(undefined);
 
 export const TooltipProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [tooltipSettings, setTooltipSettings] = useState<TooltipSettings>(() => {
-    try {
-      const saved = localStorage.getItem('estudio_tooltip_settings_v1');
-      if (saved) return { ...DEFAULT_SETTINGS, ...JSON.parse(saved) };
-    } catch {}
-    return DEFAULT_SETTINGS;
-  });
-
-  const [uiPreferences, setUiPreferences] = useState<UIPreferences>(() => {
-    try {
-      const saved = localStorage.getItem('estudio_ui_preferences_v1');
-      if (saved) return { ...DEFAULT_UI_PREFERENCES, ...JSON.parse(saved) };
-    } catch {}
-    return DEFAULT_UI_PREFERENCES;
-  });
-
-  const [rulerSettings, setRulerSettings] = useState<RulerSettings>(() => {
-    try {
-      const saved = localStorage.getItem('estudio_ruler_settings_v1');
-      if (saved) return { ...DEFAULT_RULER_SETTINGS, ...JSON.parse(saved) };
-    } catch {}
-    return DEFAULT_RULER_SETTINGS;
-  });
-
-  const [gridSnapSensitivityMm, setGridSnapSensitivityMmState] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem('estudio_grid_snap_mm');
-      if (saved) return Number(saved) || 1.0;
-    } catch {}
-    return 1.0;
-  });
-
-  const [themeMode, setThemeModeState] = useState<'light' | 'dark' | 'eink_high_contrast'>(() => {
-    try {
-      const saved = localStorage.getItem('estudio_theme_mode');
-      if (saved) return saved as any;
-    } catch {}
-    return 'light';
-  });
-
+  const [tooltipSettings, setTooltipSettings] = useState<TooltipSettings>(DEFAULT_SETTINGS);
+  const [uiPreferences, setUiPreferences] = useState<UIPreferences>(DEFAULT_UI_PREFERENCES);
+  const [rulerSettings, setRulerSettings] = useState<RulerSettings>(DEFAULT_RULER_SETTINGS);
+  const [gridSnapSensitivityMm, setGridSnapSensitivityMmState] = useState<number>(1.0);
+  const [themeMode, setThemeModeState] = useState<'light' | 'dark' | 'eink_high_contrast'>('light');
   const [isPreferencesModalOpen, setIsPreferencesModalOpen] = useState(false);
 
+  // Load preferences from SQLite kv on startup
   useEffect(() => {
-    try {
-      localStorage.setItem('estudio_tooltip_settings_v1', JSON.stringify(tooltipSettings));
-    } catch {}
+    let isMounted = true;
+    (async () => {
+      try {
+        const [ttVal, uiVal, rulerVal, gridVal, themeVal] = await Promise.all([
+          api.prefsGet('estudio_tooltip_settings_v1'),
+          api.prefsGet('estudio_ui_preferences_v1'),
+          api.prefsGet('estudio_ruler_settings_v1'),
+          api.prefsGet('estudio_grid_snap_mm'),
+          api.prefsGet('estudio_theme_mode'),
+        ]);
+        if (!isMounted) return;
+        if (ttVal) {
+          try { setTooltipSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(ttVal) }); } catch {}
+        }
+        if (uiVal) {
+          try { setUiPreferences({ ...DEFAULT_UI_PREFERENCES, ...JSON.parse(uiVal) }); } catch {}
+        }
+        if (rulerVal) {
+          try { setRulerSettings({ ...DEFAULT_RULER_SETTINGS, ...JSON.parse(rulerVal) }); } catch {}
+        }
+        if (gridVal) {
+          const num = Number(gridVal);
+          if (!isNaN(num) && num > 0) setGridSnapSensitivityMmState(num);
+        }
+        if (themeVal && ['light', 'dark', 'eink_high_contrast'].includes(themeVal)) {
+          setThemeModeState(themeVal as any);
+        }
+      } catch (err) {
+        console.warn('Failed to load preferences from SQLite', err);
+      }
+    })();
+    return () => { isMounted = false; };
+  }, []);
+
+  useEffect(() => {
+    api.prefsSet('estudio_tooltip_settings_v1', JSON.stringify(tooltipSettings)).catch(() => {});
   }, [tooltipSettings]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('estudio_ui_preferences_v1', JSON.stringify(uiPreferences));
-    } catch {}
+    api.prefsSet('estudio_ui_preferences_v1', JSON.stringify(uiPreferences)).catch(() => {});
   }, [uiPreferences]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('estudio_ruler_settings_v1', JSON.stringify(rulerSettings));
-    } catch {}
+    api.prefsSet('estudio_ruler_settings_v1', JSON.stringify(rulerSettings)).catch(() => {});
   }, [rulerSettings]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('estudio_grid_snap_mm', String(gridSnapSensitivityMm));
-    } catch {}
+    api.prefsSet('estudio_grid_snap_mm', String(gridSnapSensitivityMm)).catch(() => {});
   }, [gridSnapSensitivityMm]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('estudio_theme_mode', themeMode);
-    } catch {}
+    api.prefsSet('estudio_theme_mode', themeMode).catch(() => {});
   }, [themeMode]);
 
   const updateTooltipSettings = (partial: Partial<TooltipSettings>) => {

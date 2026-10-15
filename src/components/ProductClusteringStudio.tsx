@@ -66,7 +66,6 @@ export const ProductClusteringStudio: React.FC<ProductClusteringStudioProps> = (
   // Create manual assortment
   const handleCreateManual = () => {
     if (selectedIdsForManual.length < 2) {
-      alert('Veuillez sélectionner au moins 2 articles pour créer un assortiment groupé.');
       return;
     }
     const items = products.filter((p) => selectedIdsForManual.includes(p.id));

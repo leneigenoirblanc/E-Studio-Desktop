@@ -385,7 +385,7 @@ export const MultiSlotSignageStudio: React.FC<MultiSlotSignageStudioProps> = ({
                         <div className="pt-2 border-t border-slate-100 flex items-end justify-between">
                           <div>
                             <div className="font-mono text-[9px] text-slate-400">
-                              EAN: {prod.PRODUCT_SCAN || '3250390123456'}
+                              EAN: {prod.PRODUCT_SCAN || '—'}
                             </div>
                             <div className="text-[9px] text-slate-500">
                               {prod.UNIT_PRICE_TEXT || `${prod.SELLING_PRICE} € / unité`}

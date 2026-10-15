@@ -1,6 +1,5 @@
 import React from 'react';
-import { AppView } from '../services/navigationService';
-import { LabelTemplate } from '../types';
+import { AppView, LabelTemplate } from '../types';
 import {
   LayoutDashboard,
   Layers,

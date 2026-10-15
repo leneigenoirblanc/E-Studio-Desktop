@@ -139,7 +139,7 @@ export const DataCleaningStudioModal: React.FC<DataCleaningStudioModalProps> = (
       ['code', 'ean', 'gencod', 'barcode'].some((k) => h.toLowerCase().includes(k))
     );
     if (!eanHeader) {
-      alert("Avertissement : Aucune colonne de code-barres (EAN/Gencod) identifiée pour la déduplication.");
+      console.warn("Avertissement : Aucune colonne de code-barres (EAN/Gencod) identifiée pour la déduplication.");
       return;
     }
 
@@ -274,7 +274,6 @@ export const DataCleaningStudioModal: React.FC<DataCleaningStudioModalProps> = (
 
   const handleDeleteColumn = (colName: string) => {
     if (headers.length <= 1) {
-      alert("Impossible de supprimer la dernière colonne restante.");
       return;
     }
     setHeaders((prev) => prev.filter((h) => h !== colName));
@@ -291,7 +290,6 @@ export const DataCleaningStudioModal: React.FC<DataCleaningStudioModalProps> = (
     const name = newColTitle.trim();
     if (!name) return;
     if (headers.includes(name)) {
-      alert("Une colonne portant ce nom existe déjà.");
       return;
     }
     setHeaders((prev) => [...prev, name]);
@@ -382,14 +380,6 @@ export const DataCleaningStudioModal: React.FC<DataCleaningStudioModalProps> = (
     const res = databaseService.saveToMasterDatabase(canonicalProducts, saveMode);
 
     if (onDatabaseUpdated) onDatabaseUpdated();
-
-    alert(
-      `✓ Base de Données Principale mise à jour avec succès !\n` +
-        `- Total d'articles dans la base : ${res.totalCount}\n` +
-        `- Articles mis à jour : ${res.updatedCount}\n` +
-        `- Nouveaux articles ajoutés : ${res.addedCount}`
-    );
-
     onClose();
   };
 

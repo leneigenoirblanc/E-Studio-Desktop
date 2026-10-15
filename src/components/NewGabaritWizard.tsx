@@ -27,8 +27,8 @@ const PRESETS = [
 
 export const NewGabaritWizard: React.FC<NewGabaritWizardProps> = ({ isOpen, onClose, onCreate }) => {
   const [name, setName] = useState("Nouveau Gabarit");
-  const [widthMm, setWidthMm] = useState(100.0);
-  const [heightMm, setHeightMm] = useState(50.0);
+  const [width_mm, setWidth_mm] = useState(100.0);
+  const [height_mm, setHeight_mm] = useState(50.0);
   const [innerMargins, setInnerMargins] = useState<Margins>({ top: 2.0, bottom: 2.0, left: 2.0, right: 2.0 });
   const [outerMargins, setOuterMargins] = useState<Margins>({ top: 1.0, bottom: 1.0, left: 1.0, right: 1.0 });
   const [bgColor, setBgColor] = useState("#FFFFFF");
@@ -44,8 +44,8 @@ export const NewGabaritWizard: React.FC<NewGabaritWizardProps> = ({ isOpen, onCl
   if (!isOpen) return null;
 
   const handlePreset = (preset: typeof PRESETS[0]) => {
-    setWidthMm(preset.w);
-    setHeightMm(preset.h);
+    setWidth_mm(preset.w);
+    setHeight_mm(preset.h);
     setInnerMargins({ top: preset.inner, bottom: preset.inner, left: preset.inner, right: preset.inner });
     setOuterMargins({ top: preset.outer, bottom: preset.outer, left: preset.outer, right: preset.outer });
     setName(preset.name.split(' (')[0]);
@@ -71,7 +71,7 @@ export const NewGabaritWizard: React.FC<NewGabaritWizardProps> = ({ isOpen, onCl
     if (!name.trim()) {
       validationErrors.push("Le nom du gabarit ne peut pas être vide.");
     }
-    if (widthMm <= 0 || heightMm <= 0) {
+    if (width_mm <= 0 || height_mm <= 0) {
       validationErrors.push("Les dimensions doivent être strictement positives.");
     }
     if (
@@ -86,8 +86,8 @@ export const NewGabaritWizard: React.FC<NewGabaritWizardProps> = ({ isOpen, onCl
     ) {
       validationErrors.push("Les marges ne peuvent pas être négatives.");
     }
-    const printableW = widthMm - innerMargins.left - innerMargins.right;
-    const printableH = heightMm - innerMargins.top - innerMargins.bottom;
+    const printableW = width_mm - innerMargins.left - innerMargins.right;
+    const printableH = height_mm - innerMargins.top - innerMargins.bottom;
     if (printableW <= 0 || printableH <= 0) {
       validationErrors.push("Les marges intérieures doivent laisser une zone imprimable.");
     }
@@ -97,11 +97,16 @@ export const NewGabaritWizard: React.FC<NewGabaritWizardProps> = ({ isOpen, onCl
       return;
     }
 
+    const now = new Date().toISOString();
     const newTemplate: LabelTemplate = {
+      id: `tpl_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+      revision: 1,
+      created_at: now,
+      updated_at: now,
       schema_version: 1,
       name: name.trim(),
-      width_mm: widthMm,
-      height_mm: heightMm,
+      width_mm: width_mm,
+      height_mm: height_mm,
       inner_margins_mm: innerMargins,
       outer_margins_mm: outerMargins,
       bg_color: bgColor,
@@ -198,8 +203,8 @@ export const NewGabaritWizard: React.FC<NewGabaritWizardProps> = ({ isOpen, onCl
                 min="10"
                 max="500"
                 required
-                value={widthMm}
-                onChange={(e) => setWidthMm(parseFloat(e.target.value) || 10)}
+                value={width_mm}
+                onChange={(e) => setWidth_mm(parseFloat(e.target.value) || 10)}
                 className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
               />
             </div>
@@ -211,8 +216,8 @@ export const NewGabaritWizard: React.FC<NewGabaritWizardProps> = ({ isOpen, onCl
                 min="10"
                 max="500"
                 required
-                value={heightMm}
-                onChange={(e) => setHeightMm(parseFloat(e.target.value) || 10)}
+                value={height_mm}
+                onChange={(e) => setHeight_mm(parseFloat(e.target.value) || 10)}
                 className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
               />
             </div>
@@ -254,7 +259,7 @@ export const NewGabaritWizard: React.FC<NewGabaritWizardProps> = ({ isOpen, onCl
             <div className="flex items-center justify-between">
               <span className="font-semibold text-slate-800">Marges Intérieures (Zone Imprimable)</span>
               <span className="text-[11px] text-slate-500 font-mono">
-                Imprimable: {(widthMm - innerMargins.left - innerMargins.right).toFixed(1)} × {(heightMm - innerMargins.top - innerMargins.bottom).toFixed(1)} mm
+                Imprimable: {(width_mm - innerMargins.left - innerMargins.right).toFixed(1)} × {(height_mm - innerMargins.top - innerMargins.bottom).toFixed(1)} mm
               </span>
             </div>
             <div className="grid grid-cols-4 gap-2">

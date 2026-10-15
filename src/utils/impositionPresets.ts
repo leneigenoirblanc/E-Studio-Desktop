@@ -1,4 +1,5 @@
 import { ImpositionPreset } from '../types';
+import { desktopFileService } from '../services/desktopFileService';
 
 export const BUILTIN_IMPOSITION_PRESETS: ImpositionPreset[] = [
   {
@@ -120,17 +121,13 @@ export class ImpositionPresetsManager {
   }
 
   /**
-   * Download the decoupled preset JSON file directly
+   * Save the decoupled preset JSON file to local disk
    */
-  static downloadPresetFile(preset: ImpositionPreset) {
+  static async downloadPresetFile(preset: ImpositionPreset) {
     const jsonStr = this.exportPresetToJson(preset);
-    const blob = new Blob([jsonStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${preset.id}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    await desktopFileService.saveText(`${preset.id}.json`, jsonStr, [
+      { name: 'Préréglage Imposition', extensions: ['json'] },
+    ]);
   }
 
   /**

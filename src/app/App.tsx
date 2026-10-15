@@ -19,31 +19,13 @@ import { catalogRepository } from '../services/catalogRepository';
 import { navigationService, AppView } from '../services/navigationService';
 import { AuditLogService } from '../services/auditLogService';
 import { sanitizeNonPriceElement } from '../utils/pricingEngine';
-
-const TEMPLATES_STORAGE_KEY = 'estudio_desktop_templates_v3';
+import { api } from '../services/api';
 
 function MainWorkspace() {
   const [currentView, setCurrentView] = useState<AppView>('home');
-  // Starts with genuine empty array on clean install
-  const [templates, setTemplates] = useState<LabelTemplate[]>(() => {
-    try {
-      const saved = localStorage.getItem(TEMPLATES_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          return parsed.map((tpl: LabelTemplate) => ({
-            ...tpl,
-            items: (tpl.items || []).map((it) => sanitizeNonPriceElement(it)),
-          }));
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to load local templates workspace', e);
-    }
-    return [];
-  });
-
-  const [activeTemplate, setActiveTemplate] = useState<LabelTemplate | null>(() => templates[0] || null);
+  // Starts with genuine empty array on clean install, loads from SQLite
+  const [templates, setTemplates] = useState<LabelTemplate[]>([]);
+  const [activeTemplate, setActiveTemplate] = useState<LabelTemplate | null>(null);
   const [generationProducts, setGenerationProducts] = useState<ProductRecord[] | undefined>(undefined);
   const [generationBatchName, setGenerationBatchName] = useState<string | undefined>(undefined);
 
@@ -59,22 +41,43 @@ function MainWorkspace() {
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const [isPreferencesOpen, setIsPreferencesOpen] = useState(false);
 
-  // Sync templates to localStorage
-  const saveTemplates = useCallback((updatedTemplates: LabelTemplate[]) => {
-    setTemplates(updatedTemplates);
-    try {
-      localStorage.setItem(TEMPLATES_STORAGE_KEY, JSON.stringify(updatedTemplates));
-    } catch (e) {
-      console.warn('Failed to persist templates', e);
-    }
+  // Load templates from SQLite on mount
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      try {
+        const summaries = await api.templateList();
+        const fullDocs = await Promise.all(
+          summaries.map(async (s) => {
+            try {
+              return await api.templateGet(s.id);
+            } catch {
+              return null;
+            }
+          })
+        );
+        const validDocs = fullDocs.filter((d): d is LabelTemplate => d !== null);
+        if (!isMounted) return;
+        setTemplates(validDocs);
+        if (validDocs.length > 0) {
+          setActiveTemplate((prev) => prev || validDocs[0]);
+        }
+      } catch (err) {
+        console.warn('Failed to load templates from SQLite', err);
+      }
+    })();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   // Subscribe to Navigation Service
   useEffect(() => {
     const unsub = navigationService.subscribe((route) => {
       setCurrentView(route.view);
-      if (route.params.template) {
-        const found = templates.find((t) => t.name === route.params.template);
+      const targetId = route.params.templateId || route.params.template;
+      if (targetId) {
+        const found = templates.find((t) => t.id === targetId || t.name === targetId);
         if (found) setActiveTemplate(found);
       }
     });
@@ -96,7 +99,7 @@ function MainWorkspace() {
 
   const handleSelectTemplateToEdit = (template: LabelTemplate) => {
     setActiveTemplate(template);
-    navigationService.navigateTo('editor', { template: template.name });
+    navigationService.navigateTo('editor', { template: template.id });
   };
 
   const handleSelectTemplateToGenerate = (
@@ -107,96 +110,138 @@ function MainWorkspace() {
     setActiveTemplate(template);
     setGenerationProducts(customProducts);
     setGenerationBatchName(batchName);
-    navigationService.navigateTo('generation', { template: template.name });
+    navigationService.navigateTo('generation', { template: template.id });
   };
 
-  const handleSaveTemplate = (updated: LabelTemplate) => {
+  const handleSaveTemplate = async (updated: LabelTemplate) => {
+    const now = new Date().toISOString();
     const sanitized: LabelTemplate = {
       ...updated,
+      id: updated.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `tpl_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`),
+      revision: (updated.revision || 0) + 1,
+      created_at: updated.created_at || now,
+      updated_at: now,
       items: (updated.items || []).map((it) => sanitizeNonPriceElement(it)),
     };
-    const existingIndex = templates.findIndex((t) => t.name === sanitized.name);
-    let nextTemplates: LabelTemplate[];
-    if (existingIndex >= 0) {
-      nextTemplates = [...templates];
-      nextTemplates[existingIndex] = sanitized;
-    } else {
-      nextTemplates = [sanitized, ...templates];
+    try {
+      const savedDoc = await api.templateSave(sanitized);
+      setTemplates((prev) => {
+        const existingIndex = prev.findIndex((t) => t.id === savedDoc.id);
+        if (existingIndex >= 0) {
+          const next = [...prev];
+          next[existingIndex] = savedDoc;
+          return next;
+        }
+        return [savedDoc, ...prev];
+      });
+      setActiveTemplate(savedDoc);
+      AuditLogService.append({
+        action: 'MODIFICATION_GABARIT',
+        template_name: savedDoc.name,
+        details: `Gabarit sauvegardé : ${savedDoc.name} (Rev ${savedDoc.revision}, ${savedDoc.items.length} éléments)`,
+      });
+    } catch (err) {
+      console.error('Failed to save template to SQLite', err);
     }
-    saveTemplates(nextTemplates);
-    setActiveTemplate(sanitized);
-    AuditLogService.append({
-      user: 'Opérateur Local',
-      action: 'MODIFICATION_GABARIT',
-      template_name: sanitized.name,
-      details: `Gabarit sauvegardé : ${sanitized.name} (${sanitized.items.length} éléments)`,
-    });
   };
 
-  const handleDuplicateTemplate = (template: LabelTemplate) => {
-    const copyName = `${template.name} (Copie ${Date.now().toString().slice(-4)})`;
+  const handleDuplicateTemplate = async (template: LabelTemplate) => {
+    const copyId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `tpl_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const copyName = `${template.name} - Copie`;
+    const now = new Date().toISOString();
     const duplicated: LabelTemplate = {
       ...JSON.parse(JSON.stringify(template)),
+      id: copyId,
       name: copyName,
-      items: (template.items || []).map((it) => sanitizeNonPriceElement(it)),
+      revision: 1,
+      created_at: now,
+      updated_at: now,
+      items: JSON.parse(JSON.stringify(template.items || [])).map((it: any) => sanitizeNonPriceElement(it)),
     };
-    const nextTemplates = [duplicated, ...templates];
-    saveTemplates(nextTemplates);
-    setActiveTemplate(duplicated);
-    AuditLogService.append({
-      user: 'Opérateur Local',
-      action: 'DUPLICATION_GABARIT',
-      template_name: copyName,
-      details: `Gabarit dupliqué depuis : ${template.name}`,
-    });
-  };
-
-  const handleDeleteTemplate = (templateName: string) => {
-    const nextTemplates = templates.filter((t) => t.name !== templateName);
-    saveTemplates(nextTemplates);
-    if (activeTemplate?.name === templateName) {
-      setActiveTemplate(nextTemplates[0] || null);
+    try {
+      const savedDoc = await api.templateSave(duplicated);
+      setTemplates((prev) => [savedDoc, ...prev]);
+      setActiveTemplate(savedDoc);
+      AuditLogService.append({
+        action: 'DUPLICATION_GABARIT',
+        template_name: copyName,
+        details: `Gabarit dupliqué depuis : ${template.name} (${template.id})`,
+      });
+    } catch (err) {
+      console.error('Failed to duplicate template in SQLite', err);
     }
-    AuditLogService.append({
-      user: 'Opérateur Local',
-      action: 'SUPPRESSION_GABARIT',
-      template_name: templateName,
-      details: `Gabarit supprimé : ${templateName}`,
-    });
   };
 
-  const handleImportTemplate = (imported: LabelTemplate) => {
+  const handleDeleteTemplate = async (templateId: string) => {
+    const toDelete = templates.find((t) => t.id === templateId || t.name === templateId);
+    const realId = toDelete?.id || templateId;
+    try {
+      await api.templateDelete(realId);
+      setTemplates((prev) => {
+        const next = prev.filter((t) => t.id !== realId && t.name !== realId);
+        if (activeTemplate?.id === realId || activeTemplate?.name === realId) {
+          setActiveTemplate(next[0] || null);
+        }
+        return next;
+      });
+      AuditLogService.append({
+        action: 'SUPPRESSION_GABARIT',
+        template_name: toDelete?.name || templateId,
+        details: `Gabarit supprimé : ${toDelete?.name || templateId}`,
+      });
+    } catch (err) {
+      console.error('Failed to delete template from SQLite', err);
+    }
+  };
+
+  const handleImportTemplate = async (imported: LabelTemplate) => {
+    const now = new Date().toISOString();
     const sanitized: LabelTemplate = {
       ...imported,
+      id: imported.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `tpl_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`),
+      revision: imported.revision || 1,
+      created_at: imported.created_at || now,
+      updated_at: now,
       items: (imported.items || []).map((it) => sanitizeNonPriceElement(it)),
     };
-    const nextTemplates = [sanitized, ...templates.filter((t) => t.name !== sanitized.name)];
-    saveTemplates(nextTemplates);
-    setActiveTemplate(sanitized);
-    AuditLogService.append({
-      user: 'Opérateur Local',
-      action: 'IMPORT_GABARIT',
-      template_name: sanitized.name,
-      details: `Gabarit importé : ${sanitized.name}`,
-    });
+    try {
+      const savedDoc = await api.templateSave(sanitized);
+      setTemplates((prev) => [savedDoc, ...prev.filter((t) => t.id !== savedDoc.id)]);
+      setActiveTemplate(savedDoc);
+      AuditLogService.append({
+        action: 'IMPORT_GABARIT',
+        template_name: savedDoc.name,
+        details: `Gabarit importé : ${savedDoc.name} (${savedDoc.id})`,
+      });
+    } catch (err) {
+      console.error('Failed to import template into SQLite', err);
+    }
   };
 
-  const handleCreateNewTemplate = (newTemplate: LabelTemplate) => {
+  const handleCreateNewTemplate = async (newTemplate: LabelTemplate) => {
+    const now = new Date().toISOString();
     const sanitized: LabelTemplate = {
       ...newTemplate,
+      id: newTemplate.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `tpl_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`),
+      revision: 1,
+      created_at: newTemplate.created_at || now,
+      updated_at: now,
       items: (newTemplate.items || []).map((it) => sanitizeNonPriceElement(it)),
     };
-    const nextTemplates = [sanitized, ...templates];
-    saveTemplates(nextTemplates);
-    setActiveTemplate(sanitized);
-    setIsNewWizardOpen(false);
-    navigationService.navigateTo('editor', { template: sanitized.name });
-    AuditLogService.append({
-      user: 'Opérateur Local',
-      action: 'CREATION_GABARIT',
-      template_name: newTemplate.name,
-      details: `Nouveau gabarit créé : ${newTemplate.name} (${newTemplate.width_mm}x${newTemplate.height_mm}mm)`,
-    });
+    try {
+      const savedDoc = await api.templateSave(sanitized);
+      setTemplates((prev) => [savedDoc, ...prev]);
+      setActiveTemplate(savedDoc);
+      setIsNewWizardOpen(false);
+      navigationService.navigateTo('editor', { template: savedDoc.id });
+      AuditLogService.append({
+        action: 'CREATION_GABARIT',
+        template_name: savedDoc.name,
+        details: `Nouveau gabarit créé : ${savedDoc.name} (${savedDoc.width_mm}x${savedDoc.height_mm}mm)`,
+      });
+    } catch (err) {
+      console.error('Failed to create template in SQLite', err);
+    }
   };
 
   return (
@@ -238,6 +283,10 @@ function MainWorkspace() {
         {currentView === 'editor' && (
           <TemplateEditor
             initialTemplate={activeTemplate || {
+              id: 'tpl_default_new',
+              revision: 1,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
               schema_version: 1,
               name: 'Nouveau Gabarit',
               width_mm: 100,
@@ -258,6 +307,10 @@ function MainWorkspace() {
         {currentView === 'generation' && (
           <GenerationWorkspace
             template={activeTemplate || {
+              id: 'tpl_default_std',
+              revision: 1,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
               schema_version: 1,
               name: 'Gabarit Standard',
               width_mm: 100,
@@ -280,7 +333,6 @@ function MainWorkspace() {
             templates={templates}
             onGenerateFromDatabase={(selectedItems) => {
               if (templates.length === 0) {
-                alert('Veuillez d\'abord créer un gabarit d\'étiquette avant de lancer la génération.');
                 handleNavigate('home');
                 return;
               }

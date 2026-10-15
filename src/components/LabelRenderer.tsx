@@ -343,17 +343,28 @@ export const LabelRenderer: React.FC<LabelRendererProps> = ({
             ? 'justify-end text-right'
             : 'justify-start text-left';
 
-        // Resolve raw price
-        let rawPrice: any = item.fallback_price ?? 29.99;
-        if (record && item.binding_key) {
-          const val = PricingEngine.getProductFieldValue(record, item.binding_key);
-          if (val !== undefined && val !== null && val !== '') {
-            rawPrice = val;
+        // Resolve raw price: do not invent fallback_price when a real product record is passed
+        let rawPrice: any = !record ? (item.fallback_price ?? 29.99) : undefined;
+        if (record) {
+          if (item.binding_key) {
+            const val = PricingEngine.getProductFieldValue(record, item.binding_key);
+            if (val !== undefined && val !== null && val !== '') {
+              rawPrice = val;
+            }
+          } else {
+            rawPrice = PricingEngine.getSellingPrice(record);
           }
         }
 
-        const separator = item.decimal_separator || ',';
-        const { integerPart, decimalPart } = PricingEngine.splitPrice(rawPrice, separator);
+        // If product record exists but has no price bound or price is empty, do not display fake 0,00
+        if (record && (rawPrice === undefined || rawPrice === null || rawPrice === '')) {
+          return null;
+        }
+
+        const currencySym = item.currency_symbol || '€';
+        const decimals = /FCFA|CFA|GNF|XOF|XAF/i.test(currencySym) ? 0 : 2;
+        const separator = item.decimal_separator ?? ',';
+        const { integerPart, decimalPart } = PricingEngine.splitPrice(rawPrice, separator, decimals);
 
         const intSizePt = item.integer_style?.font_size_pt || 28;
         const decSizePt = item.decimal_style?.font_size_pt || Math.max(9, Math.round(intSizePt * 0.52));
@@ -362,8 +373,6 @@ export const LabelRenderer: React.FC<LabelRendererProps> = ({
         const baseIntSizePx = Math.max(10, intSizePt * 1.333 * zoom);
         const baseDecSizePx = Math.max(7, decSizePt * 1.333 * zoom);
         const baseCurrSizePx = Math.max(7, currSizePt * 1.333 * zoom);
-
-        const currencySym = item.currency_symbol || '€';
         const currPos = item.currency_position || 'after';
         const decShift = item.decimal_style?.baseline_shift || 'superscript';
 
@@ -542,7 +551,7 @@ export const LabelRenderer: React.FC<LabelRendererProps> = ({
       }
 
       case 'barcode': {
-        const code = PricingEngine.resolveBarcodeValue(item, record);
+        const code = PricingEngine.resolveBarcodeValue(item, record, { sample: !record });
         const isEan13 = item.barcode_type === 'ean13';
         let barElements: React.ReactNode = null;
 
@@ -621,7 +630,7 @@ export const LabelRenderer: React.FC<LabelRendererProps> = ({
       }
 
       case 'qrcode': {
-        const content = PricingEngine.resolveQrContent(item, record);
+        const content = PricingEngine.resolveQrContent(item, record, { sample: !record });
         const matrix = generateQrMatrix(content);
 
         return (

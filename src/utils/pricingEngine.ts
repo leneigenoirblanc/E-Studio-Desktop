@@ -1,6 +1,15 @@
 import { ProductRecord, TextItemProperties, TemplateItem } from '../types';
 import { resolveCanonicalKey } from './mappingDictionary';
 
+export type PriceParseStatus = 'valid' | 'missing' | 'invalid';
+
+export interface PriceParseResult {
+  status: PriceParseStatus;
+  amount?: number;
+  raw?: any;
+  reason?: string;
+}
+
 /**
  * Advanced Retail & Pricing Engine for E-Studio
  * Handles automatic unit price per kg/L, discount percentage, 
@@ -23,19 +32,19 @@ export class PricingEngine {
       return record.custom_name_override;
     }
 
-    // 1. Direct property match
-    if (record[bindingKey] !== undefined && record[bindingKey] !== null && record[bindingKey] !== '') {
-      return record[bindingKey];
-    }
-
-    // 2. Special handling for Promo Price
+    // 1. Special handling for Promo Price (must be evaluated before direct match so PROMOPRICE=0 doesn't bypass promo logic)
     if (bindingKey === 'PROMOPRICE') {
       return PricingEngine.getPromoPrice(record);
     }
 
-    // 3. Special handling for Selling Price
+    // 2. Special handling for Selling Price
     if (bindingKey === 'SELLING_PRICE') {
       return PricingEngine.getSellingPrice(record);
+    }
+
+    // 3. Direct property match
+    if (record[bindingKey] !== undefined && record[bindingKey] !== null && record[bindingKey] !== '') {
+      return record[bindingKey];
     }
 
     // 4. Normalized key search (e.g. "PRIX_PROMO", "PRIX PROMO", "prix_promo")
@@ -58,14 +67,75 @@ export class PricingEngine {
     return undefined;
   }
 
+
+  /**
+   * Evaluates and parses a raw price into a structured result distinguishing:
+   * - 'valid': genuine parsed number (including explicit 0 if legitimate)
+   * - 'missing': undefined, null, or empty string
+   * - 'invalid': non-numeric string, corrupted text or NaN
+   */
+  static parsePrice(val: any): PriceParseResult {
+    if (val === undefined || val === null) {
+      return { status: 'missing', raw: val };
+    }
+    if (typeof val === 'number') {
+      if (isNaN(val)) return { status: 'invalid', raw: val, reason: 'Valeur NaN' };
+      return { status: 'valid', amount: val, raw: val };
+    }
+    const s = String(val).trim();
+    if (s === '') {
+      return { status: 'missing', raw: val };
+    }
+
+    // Strip currency symbols and letters (Unicode aware)
+    const cleaned = s.replace(/[€$£¥\p{L}]/gu, '').replace(/\s+/g, '');
+    if (!cleaned) {
+      return { status: 'invalid', raw: val, reason: `Contenu non numérique ("${s}")` };
+    }
+
+    let numStr = cleaned;
+    const hasComma = numStr.includes(',');
+    const hasDot = numStr.includes('.');
+    if (hasComma && hasDot) {
+      if (numStr.lastIndexOf(',') < numStr.lastIndexOf('.')) {
+        numStr = numStr.replace(/,/g, '');
+      } else {
+        numStr = numStr.replace(/\./g, '').replace(',', '.');
+      }
+    } else if (hasComma) {
+      numStr = numStr.replace(',', '.');
+    }
+
+    const num = parseFloat(numStr);
+    if (isNaN(num)) {
+      return { status: 'invalid', raw: val, reason: `Impossible de convertir "${s}" en nombre` };
+    }
+    return { status: 'valid', amount: num, raw: val };
+  }
+
+  /**
+   * Robust parser for raw prices in French/European or English notation:
+   * "12,50 €", "12.50€", "12 500 FCFA", "1,250.50", "1.250,50", "29.99"
+   */
+  static parsePriceNumber(val: any): number {
+    const res = PricingEngine.parsePrice(val);
+    return res.status === 'valid' ? (res.amount ?? 0) : 0;
+  }
+
   /**
    * Helper: Resolves promo price from record with fallback matching
    */
-  static getPromoPrice(record: ProductRecord | null | undefined): number | undefined {
-    if (!record) return undefined;
+  static resolvePromoPrice(record: ProductRecord | null | undefined): PriceParseResult {
+    if (!record) return { status: 'missing' };
 
-    if (typeof record.PROMOPRICE === 'number' && !isNaN(record.PROMOPRICE) && record.PROMOPRICE > 0) {
-      return record.PROMOPRICE;
+    if (record.PROMOPRICE !== undefined && record.PROMOPRICE !== null && (record.PROMOPRICE as any) !== '') {
+      const res = PricingEngine.parsePrice(record.PROMOPRICE);
+      if (res.status === 'valid') {
+        if ((res.amount ?? 0) > 0) return res;
+        // PROMOPRICE = 0 means no active promotional discount
+        return { status: 'missing', raw: 0 };
+      }
+      return res;
     }
 
     // Search record keys for canonical PROMOPRICE
@@ -73,40 +143,51 @@ export class PricingEngine {
       const canonical = resolveCanonicalKey(k);
       if (canonical === 'PROMOPRICE') {
         const val = record[k];
-        if (typeof val === 'number' && !isNaN(val) && val > 0) return val;
-        if (typeof val === 'string') {
-          const num = parseFloat(val.replace(',', '.').replace(/[^0-9.-]+/g, ''));
-          if (!isNaN(num) && num > 0) return num;
+        if (val !== undefined && val !== null && val !== '') {
+          const res = PricingEngine.parsePrice(val);
+          if (res.status === 'valid') {
+            if ((res.amount ?? 0) > 0) return res;
+            return { status: 'missing', raw: val };
+          }
+          return res;
         }
       }
     }
 
-    return undefined;
+    return { status: 'missing' };
+  }
+
+  static getPromoPrice(record: ProductRecord | null | undefined): number | undefined {
+    const res = PricingEngine.resolvePromoPrice(record);
+    return res.status === 'valid' ? res.amount : undefined;
   }
 
   /**
    * Helper: Resolves standard selling price from record with fallback matching
    */
-  static getSellingPrice(record: ProductRecord | null | undefined): number {
-    if (!record) return 0;
+  static resolveSellingPrice(record: ProductRecord | null | undefined): PriceParseResult {
+    if (!record) return { status: 'missing' };
 
-    if (typeof record.SELLING_PRICE === 'number' && !isNaN(record.SELLING_PRICE)) {
-      return record.SELLING_PRICE;
+    if (record.SELLING_PRICE !== undefined && record.SELLING_PRICE !== null && (record.SELLING_PRICE as any) !== '') {
+      return PricingEngine.parsePrice(record.SELLING_PRICE);
     }
 
     for (const k of Object.keys(record)) {
       const canonical = resolveCanonicalKey(k);
       if (canonical === 'SELLING_PRICE') {
         const val = record[k];
-        if (typeof val === 'number' && !isNaN(val)) return val;
-        if (typeof val === 'string') {
-          const num = parseFloat(val.replace(',', '.').replace(/[^0-9.-]+/g, ''));
-          if (!isNaN(num)) return num;
+        if (val !== undefined && val !== null && val !== '') {
+          return PricingEngine.parsePrice(val);
         }
       }
     }
 
-    return 0;
+    return { status: 'missing' };
+  }
+
+  static getSellingPrice(record: ProductRecord | null | undefined): number {
+    const res = PricingEngine.resolveSellingPrice(record);
+    return res.status === 'valid' ? (res.amount ?? 0) : 0;
   }
 
   /**
@@ -119,35 +200,75 @@ export class PricingEngine {
 
     if (!record) return true;
 
-    const { rule, field_key } = item.conditional_display;
+    const { rule, field_key, compare_value } = item.conditional_display;
 
     switch (rule) {
       case 'has_promo': {
         const promo = PricingEngine.getPromoPrice(record);
         const base = PricingEngine.getSellingPrice(record);
-        return promo !== undefined && promo > 0 && (base === 0 || promo < base);
+        const priceValid = promo !== undefined && promo > 0 && (base === 0 || promo < base);
+        if (!priceValid) return false;
+
+        const parseDate = (dStr: any): Date | null => {
+          if (!dStr) return null;
+          const s = String(dStr).trim();
+          if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+            const parts = s.split('-');
+            return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+          }
+          if (/^\d{2}\/\d{2}\/\d{4}/.test(s)) {
+            const parts = s.split('/');
+            return new Date(parseInt(parts[2], 10), parseInt(parts[1], 10) - 1, parseInt(parts[0], 10));
+          }
+          return null;
+        };
+
+        const startDateStr = PricingEngine.getProductFieldValue(record, 'PROMO_START_DATE');
+        const endDateStr = PricingEngine.getProductFieldValue(record, 'PROMO_END_DATE');
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const startDate = parseDate(startDateStr);
+        const endDate = parseDate(endDateStr);
+
+        if (startDate && today < startDate) return false;
+        if (endDate && today > endDate) return false;
+
+        return true;
       }
 
       case 'has_barcode': {
-        const scan = PricingEngine.resolveBarcodeValue(item, record);
+        const scan = PricingEngine.resolveBarcodeValue(item, record, { sample: false });
         return Boolean(scan && String(scan).trim().length > 0);
       }
 
       case 'has_tiers':
-        return Boolean(record.TIERS && record.TIERS.length > 0);
+        return Boolean(
+          (record.price_tiers && record.price_tiers.length > 0) ||
+          (record.TIERS && record.TIERS.length > 0)
+        );
 
       case 'field_gt_zero': {
         const key = field_key || item.binding_key;
         if (!key) return true;
         const val = PricingEngine.getProductFieldValue(record, key);
         const num = typeof val === 'number' ? val : parseFloat(String(val || 0));
-        return !isNaN(num) && num > 0;
+        const threshold =
+          compare_value !== undefined && compare_value !== ''
+            ? typeof compare_value === 'number'
+              ? compare_value
+              : parseFloat(String(compare_value)) || 0
+            : 0;
+        return !isNaN(num) && num > threshold;
       }
 
       case 'field_not_empty': {
         const key = field_key || item.binding_key;
         if (!key) return true;
         const val = PricingEngine.getProductFieldValue(record, key);
+        if (compare_value !== undefined && compare_value !== '') {
+          return String(val ?? '').trim() === String(compare_value).trim();
+        }
         return val !== undefined && val !== null && String(val).trim() !== '';
       }
 
@@ -163,7 +284,8 @@ export class PricingEngine {
    */
   static resolveBarcodeValue(
     item: { binding_key?: string; code?: string; barcode_type?: string } | TemplateItem,
-    record?: ProductRecord | null
+    record?: ProductRecord | null,
+    options?: { sample?: boolean }
   ): string {
     if (record) {
       // 1. Explicit binding key defined on element
@@ -174,35 +296,41 @@ export class PricingEngine {
         }
       }
 
-      // 2. Automatic canonical barcode domain resolution
+      // 2. Automatic canonical barcode domain resolution (EAN / GTIN / PRODUCT_SCAN)
       const scan = PricingEngine.getProductFieldValue(record, 'PRODUCT_SCAN');
       if (scan !== undefined && scan !== null && String(scan).trim() !== '') {
         return String(scan).trim();
       }
 
-      // 3. Fallback to SKU / Reference / PARTNO
-      const partNo = PricingEngine.getProductFieldValue(record, 'PARTNO');
-      if (partNo !== undefined && partNo !== null && String(partNo).trim() !== '') {
-        return String(partNo).trim();
-      }
-
-      // 4. Fallback to product record ID
-      if (record.id) {
-        return String(record.id).trim();
+      // 3. Fallback to SKU / Reference / PARTNO - strictly restricted to Code 128 (alphanumeric symbology).
+      // EAN-13 strictly requires 12 or 13 digits and MUST NOT fall back to arbitrary alphanumeric SKU/id strings.
+      const barcodeType = (item as any).barcode_type || 'ean13';
+      if (barcodeType === 'code128') {
+        const partNo = PricingEngine.getProductFieldValue(record, 'PARTNO');
+        if (partNo !== undefined && partNo !== null && String(partNo).trim() !== '') {
+          return String(partNo).trim();
+        }
+        if (record.id) {
+          return String(record.id).trim();
+        }
       }
     }
 
-    // Static fallback
-    return (item as any).code || '3250390123456';
+    if (options?.sample) {
+      return (item as any).code || '';
+    }
+
+    return '';
   }
 
   /**
    * Dynamically resolves QR Code payload/URL from the ProductRecord,
-   * supporting template tags (e.g. {{PARTNO}}), explicit binding keys, or product scan fallbacks.
+   * supporting template tags (e.g. {{PARTNO}}), explicit binding keys, or static configured URL.
    */
   static resolveQrContent(
     item: { binding_key?: string; content?: string } | TemplateItem,
-    record?: ProductRecord | null
+    record?: ProductRecord | null,
+    options?: { sample?: boolean }
   ): string {
     if (record) {
       // 1. Explicit binding key
@@ -222,17 +350,17 @@ export class PricingEngine {
         });
       }
 
-      // 3. If content is default placeholder, try falling back to product link or barcode or partno
-      const defaultContents = ['https://example.com', 'https://monmagasin.fr', ''];
-      if (!rawContent || defaultContents.includes(rawContent)) {
-        const scan = PricingEngine.getProductFieldValue(record, 'PRODUCT_SCAN');
-        if (scan) return String(scan);
-        const partNo = PricingEngine.getProductFieldValue(record, 'PARTNO');
-        if (partNo) return String(partNo);
+      // 3. Keep configured URL / content without mutating URLs into barcodes
+      if (rawContent && typeof rawContent === 'string' && rawContent.trim() !== '') {
+        return rawContent.trim();
       }
     }
 
-    return (item as any).content || 'https://example.com';
+    if (options?.sample) {
+      return (item as any).content || 'https://example.com';
+    }
+
+    return (item as any).content || '';
   }
 
   /**
@@ -252,31 +380,38 @@ export class PricingEngine {
    */
   static splitPrice(
     val: number | string | undefined | null,
-    separator: '.' | ',' = ','
+    separator: string = ',',
+    decimals?: number
   ): { integerPart: string; decimalPart: string; hasDecimals: boolean } {
+    const numDecimals = decimals !== undefined ? decimals : 2;
     if (val === undefined || val === null || val === '') {
-      return { integerPart: '0', decimalPart: '00', hasDecimals: false };
+      return {
+        integerPart: '0',
+        decimalPart: numDecimals > 0 ? ''.padStart(numDecimals, '0') : '',
+        hasDecimals: false,
+      };
     }
 
-    let numVal: number;
-    if (typeof val === 'number') {
-      numVal = val;
-    } else {
-      const parsed = parseFloat(String(val).replace(',', '.').replace(/[^0-9.-]+/g, ''));
-      numVal = isNaN(parsed) ? 0 : parsed;
+    const numVal = PricingEngine.parsePriceNumber(val);
+
+    if (numDecimals === 0) {
+      const rounded = Math.round(numVal);
+      return {
+        integerPart: rounded.toLocaleString('fr-FR'),
+        decimalPart: '',
+        hasDecimals: false,
+      };
     }
 
-    // Format with 2 decimals if has decimal part or if fixed
-    const formatted = numVal.toFixed(2);
+    const formatted = numVal.toFixed(numDecimals);
     const [intPart, decPart] = formatted.split('.');
-    
-    // Group integer with spaces
+
     const integerGrouped = parseInt(intPart, 10).toLocaleString('fr-FR');
-    const hasDecimals = decPart !== undefined && decPart !== '00';
+    const hasDecimals = decPart !== undefined && decPart !== ''.padStart(numDecimals, '0');
 
     return {
       integerPart: integerGrouped,
-      decimalPart: decPart || '00',
+      decimalPart: decPart || ''.padStart(numDecimals, '0'),
       hasDecimals,
     };
   }
@@ -326,14 +461,19 @@ export class PricingEngine {
       }
 
       if (quantity <= 0) quantity = 1.0;
+      const rawQty = quantity;
+      const qty = rawQty * (cfg.custom_multiplier && cfg.custom_multiplier > 0 ? cfg.custom_multiplier : 1);
 
-      const unitPrice = basePrice / quantity;
+      const unitPrice = basePrice / (qty > 0 ? qty : 1.0);
       const formattedUnitPrice = unitPrice >= 100 
         ? Math.round(unitPrice).toLocaleString('fr-FR')
         : unitPrice.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       
-      const currency = item.currency_symbol || (sellingPrice > 500 ? 'FCFA' : '€');
-      return `${formattedUnitPrice} ${currency} / ${cfg.measure_unit}`;
+      const currency = item.currency_symbol ?? '';
+      const body = `${formattedUnitPrice} ${currency} / ${cfg.measure_unit}`;
+      return cfg.format_pattern
+        ? cfg.format_pattern.replace('{price}', formattedUnitPrice).replace('{unit}', cfg.measure_unit)
+        : body;
     }
 
     // 2. Discount Percentage (-25%)
@@ -345,7 +485,7 @@ export class PricingEngine {
         const pct = Math.round(((sellingPrice - promoPrice) / sellingPrice) * 100);
         return `-${pct}%`;
       }
-      return '-20%';
+      return '';
     }
 
     // 3. Secondary Currency Conversion (e.g. FCFA -> EUR)
@@ -365,8 +505,15 @@ export class PricingEngine {
     // 4. Dynamic Date (DLC / DLUO / Fabrication)
     if (item.calculation_mode === 'dynamic_date' && item.dynamic_date_config?.enabled) {
       const cfg = item.dynamic_date_config;
+      // date_type: 'today' | 'dlc' | 'dluo' | 'fab_date'
       const formattedDate = PricingEngine.formatDateOffset(cfg.offset_days || 0, cfg.format || 'DD/MM/YYYY');
-      const prefix = cfg.prefix_label ? `${cfg.prefix_label} ` : '';
+      let prefix = cfg.prefix_label ? `${cfg.prefix_label} ` : '';
+      if (!prefix) {
+        if (cfg.date_type === 'dlc') prefix = "À consommer jusqu'au : ";
+        else if (cfg.date_type === 'dluo') prefix = "À consommer de préférence avant le : ";
+        else if (cfg.date_type === 'fab_date') prefix = "Emballé le : ";
+        else prefix = '';
+      }
       return `${prefix}${formattedDate}`;
     }
 
@@ -473,6 +620,10 @@ export class PricingEngine {
 export function isPriceRelatedElement(item: TemplateItem | undefined | null): boolean {
   if (!item) return false;
   if (item.type === 'price_block' || item.type === 'tier_price') return true;
+  const anyItem = item as any;
+  if (anyItem.is_price === true || anyItem.role === 'price') return true;
+  if (anyItem.unit_price_config || anyItem.secondary_currency_config) return true;
+  if (anyItem.calculation_mode === 'unit_price' || anyItem.calculation_mode === 'secondary_currency') return true;
   if (item.type === 'text') {
     if (!item.binding_key) return false;
     const bk = item.binding_key.trim().toUpperCase().replace(/[\s\.\-]+/g, '_');

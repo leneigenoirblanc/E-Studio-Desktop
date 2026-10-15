@@ -13,6 +13,7 @@ import { DEVICE_PROFILES, SAMPLE_STORES } from '../rulesEngine/deviceProfiles';
 import { DEFAULT_RULES } from '../rulesEngine/defaultRules';
 import { RulesEngine } from '../rulesEngine/engine';
 import { catalogRepository as databaseService } from '../services/catalogRepository';
+import { api } from '../services/api';
 import {
   Cpu,
   Tv,
@@ -55,16 +56,20 @@ export const OmniChannelStudioModal: React.FC<OmniChannelStudioModalProps> = ({
   currentTemplateName,
 }) => {
   // Local state for active rules
-  const [rules, setRules] = useState<Rule[]>(() => {
-    try {
-      const saved = localStorage.getItem('estudio_rules_v1');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-    } catch {}
-    return DEFAULT_RULES;
-  });
+  const [rules, setRules] = useState<Rule[]>(DEFAULT_RULES);
+
+  React.useEffect(() => {
+    if (isOpen) {
+      api.prefsGet('estudio_rules_v1').then((saved) => {
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed) && parsed.length > 0) setRules(parsed);
+          } catch {}
+        }
+      }).catch(() => {});
+    }
+  }, [isOpen]);
 
   const [activeTab, setActiveTab] = useState<'simulation' | 'rules' | 'payload'>('simulation');
 
@@ -133,11 +138,9 @@ export const OmniChannelStudioModal: React.FC<OmniChannelStudioModalProps> = ({
 
   const handleSaveRules = (updatedRules: Rule[]) => {
     setRules(updatedRules);
-    try {
-      localStorage.setItem('estudio_rules_v1', JSON.stringify(updatedRules));
-    } catch (e) {
+    api.prefsSet('estudio_rules_v1', JSON.stringify(updatedRules)).catch((e) => {
       console.error(e);
-    }
+    });
   };
 
   const handleResetDefaultRules = () => {
@@ -550,7 +553,7 @@ export const OmniChannelStudioModal: React.FC<OmniChannelStudioModalProps> = ({
                     >
                       {/* Top Bar: SKU & Part No */}
                       <div className="flex justify-between items-center text-[10px] text-slate-600 border-b border-slate-200 pb-1">
-                        <span className="font-mono font-bold">{currentProduct.PRODUCT_SCAN || '3250390123456'}</span>
+                        <span className="font-mono font-bold">{currentProduct.PRODUCT_SCAN || '—'}</span>
                         <span className="font-bold text-slate-800">{currentProduct.PARTNO || 'REF-01'}</span>
                       </div>
 

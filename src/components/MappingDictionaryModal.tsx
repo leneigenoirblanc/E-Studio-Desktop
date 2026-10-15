@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useMappingDictionary } from '../context/MappingDictionaryContext';
 import { FieldAliasDefinition, MatchResult, normalizeToken } from '../utils/mappingDictionary';
+import { desktopFileService } from '../services/desktopFileService';
 import {
   BookOpen,
   Search,
@@ -484,15 +485,12 @@ export const MappingDictionaryModal: React.FC<MappingDictionaryModalProps> = ({ 
   };
 
   // Export Draft/Saved as JSON
-  const handleExport = () => {
+  const handleExport = async () => {
     const jsonStr = JSON.stringify(draftDictionary, null, 2);
-    const blob = new Blob([jsonStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `estudio_dictionnaire_mapping_${new Date().toISOString().slice(0, 10)}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    const filename = `estudio_dictionnaire_mapping_${new Date().toISOString().slice(0, 10)}.json`;
+    await desktopFileService.saveText(filename, jsonStr, [
+      { name: 'Dictionnaire de Mapping', extensions: ['json'] },
+    ]);
     showToast('success', 'Fichier JSON de configuration exporté avec succès.');
   };
 

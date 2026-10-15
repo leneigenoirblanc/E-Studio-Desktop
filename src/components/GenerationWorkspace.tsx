@@ -20,7 +20,13 @@ import { MappingDictionaryModal } from './MappingDictionaryModal';
 import { ContextTooltip, useTooltip } from '../context/TooltipContext';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
+import { desktopFileService } from '../services/desktopFileService';
+import { api } from '../services/api';
+import { AuditLogService } from '../services/auditLogService';
+import { PrintJobHistoryModal } from './PrintJobHistoryModal';
+import { PreFlightEngine } from '../utils/preFlightEngine';
 import {
+  History,
   ChevronLeft,
   ChevronRight,
   Printer,
@@ -32,7 +38,9 @@ import {
   FileSpreadsheet,
   Grid,
   Eye,
+  CheckCircle,
   CheckCircle2,
+  FileCheck,
   AlertTriangle,
   AlertCircle,
   FileText,
@@ -87,6 +95,8 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
   >('preview');
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
   const [isDictionaryModalOpen, setIsDictionaryModalOpen] = useState(false);
+  const [showJobHistory, setShowJobHistory] = useState(false);
+  const [exportConfirmTarget, setExportConfirmTarget] = useState<'pdf' | 'zpl' | null>(null);
 
   const handleUpdateSingleProduct = (updated: ProductRecord) => {
     setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
@@ -167,9 +177,10 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
   const effectivePrintItems = useMemo<ProductRecord[]>(() => {
     if (printScope === 'selected_only') {
       if (!currentProduct) return [];
+      const forced = typeof currentProduct.forced_copies === 'number' && currentProduct.forced_copies > 0 ? currentProduct.forced_copies : undefined;
       const count = fillSheetWithSelected && imposition
         ? imposition.total_per_page
-        : Math.max(1, selectedCopies);
+        : Math.max(1, forced ?? selectedCopies);
       return Array.from({ length: count }, () => currentProduct);
     }
     if (printScope === 'checked_only') {
@@ -178,15 +189,24 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
         return currentProduct ? [currentProduct] : [];
       }
       return checked.flatMap((p) => {
-        const qty = Math.max(1, itemCopies[p.id] || 1);
+        const forced = typeof p.forced_copies === 'number' && p.forced_copies > 0 ? p.forced_copies : undefined;
+        const qty = Math.max(1, forced ?? itemCopies[p.id] ?? 1);
         return Array.from({ length: qty }, () => p);
       });
     }
     // 'all'
-    return filteredProducts;
+    return filteredProducts.flatMap((p) => {
+      const forced = typeof p.forced_copies === 'number' && p.forced_copies > 0 ? p.forced_copies : undefined;
+      const qty = Math.max(1, forced ?? itemCopies[p.id] ?? 1);
+      return Array.from({ length: qty }, () => p);
+    });
   }, [printScope, currentProduct, fillSheetWithSelected, imposition, selectedCopies, products, checkedProductIds, itemCopies, filteredProducts]);
 
   // Preflight diagnostics for rows
+  const preFlightReport = useMemo(() => {
+    return PreFlightEngine.analyzeTemplate(template, effectivePrintItems[0], exportConfirmTarget || 'screen');
+  }, [template, effectivePrintItems, exportConfirmTarget]);
+
   const diagnostics = useMemo(() => {
     return products.map((record) => {
       const issues: { type: 'warning' | 'error'; message: string }[] = [];
@@ -246,7 +266,7 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
           setMappingModalOpen(true);
         }
       } catch (err) {
-        alert("Erreur lors de l'importation du fichier Excel/CSV : " + String(err));
+        console.error("Erreur lors de l'importation du fichier Excel/CSV :", err);
       }
     };
     reader.readAsArrayBuffer(file);
@@ -287,12 +307,17 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
     try {
       await PptxExporter.exportToPptx(template, effectivePrintItems, imposition, impositionConfig);
     } catch (err) {
-      alert("Erreur lors de l'export PowerPoint : " + String(err));
+      console.error("Erreur lors de l'export PowerPoint :", err);
     }
   };
 
   // ZPL Direct Thermal Export
-  const handleExportZpl = () => {
+  const handleExportZpl = async () => {
+    const targetReport = PreFlightEngine.analyzeTemplate(template, effectivePrintItems[0], 'zpl');
+    if (!targetReport.passed) {
+      console.error("Export ZPL refusé : le gabarit contient des erreurs bloquantes.", targetReport.issues);
+      return;
+    }
     try {
       const zplContent = ZplExporter.generateBatchZpl(template, effectivePrintItems, {
         dpi: zplDpi,
@@ -302,10 +327,38 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
         includeComments: true,
       });
       const filename = `thermique_${template.name.toLowerCase().replace(/\s+/g, '_')}_${zplDpi}dpi.zpl`;
-      ZplExporter.downloadZplFile(filename, zplContent);
+      const savedPath = await ZplExporter.downloadZplFile(filename, zplContent);
+      if (savedPath) {
+        await api.jobInsert({
+          id: `job_zpl_${Date.now()}`,
+          template_id: template.id || '',
+          template_revision: template.revision || 1,
+          product_ids: effectivePrintItems.map((p) => p.id || ''),
+          format: 'zpl',
+          imposition_json: JSON.stringify(impositionConfig),
+          target: savedPath,
+          status: 'ready',
+          error: null,
+          created_at: new Date().toISOString(),
+          template_snapshot: template,
+          printed_products: effectivePrintItems.map((p) => ({
+            id: p.id,
+            ITEMNAME: p.ITEMNAME,
+            SELLING_PRICE: p.SELLING_PRICE,
+            PROMOPRICE: p.PROMOPRICE,
+            PRODUCT_SCAN: p.PRODUCT_SCAN,
+            PARTNO: p.PARTNO,
+          })),
+        });
+        AuditLogService.append({
+          action: 'EXPORT_ZPL',
+          template_name: template.name,
+          details: `Fichier ZPL enregistré : ${savedPath} (${effectivePrintItems.length} étiquettes, ${zplDpi} DPI)`,
+        });
+      }
       setShowZplModal(false);
     } catch (err) {
-      alert("Erreur lors de la génération ZPL : " + String(err));
+      console.error("Erreur lors de la génération ZPL :", err);
     }
   };
 
@@ -353,8 +406,12 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
         const col = slot % imposition.cols;
         const row = Math.floor(slot / imposition.cols);
 
-        const x = imposition.horizontal_offset_mm + col * (imposition.label_total_w_mm + gapX);
-        const y = imposition.vertical_offset_mm + row * (imposition.label_total_h_mm + gapY);
+        const nudge = impositionConfig.slot_nudges?.[slot] || { dx_mm: 0, dy_mm: 0 };
+        const nudgeX = typeof nudge.dx_mm === 'number' ? nudge.dx_mm : 0;
+        const nudgeY = typeof nudge.dy_mm === 'number' ? nudge.dy_mm : 0;
+
+        const x = imposition.horizontal_offset_mm + col * (imposition.label_total_w_mm + gapX) + nudgeX;
+        const y = imposition.vertical_offset_mm + row * (imposition.label_total_h_mm + gapY) + nudgeY;
 
         // Label background & border
         if (template.bg_color && template.bg_color !== 'transparent') {
@@ -364,6 +421,15 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
           const b = parseInt(hex.substring(4, 6), 16) || 255;
           doc.setFillColor(r, g, b);
           doc.rect(x, y, template.width_mm, template.height_mm, 'F');
+        }
+
+        // Render background reference image if configured for output
+        if (template.background_image_path && template.background_image_in_output) {
+          try {
+            doc.addImage(template.background_image_path, 'JPEG', x, y, template.width_mm, template.height_mm);
+          } catch (err) {
+            console.warn("Échec d'insertion image de fond dans le PDF :", err);
+          }
         }
 
         doc.setDrawColor(220, 226, 235);
@@ -387,8 +453,13 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
           const itemY = y + item.y_mm;
 
           if (item.type === 'text') {
-            const textVal = PricingEngine.resolveCalculatedText(item, prod);
+            let textVal = PricingEngine.resolveCalculatedText(item, prod);
             if (!textVal) return;
+
+            if (item.prefix_text) textVal = `${item.prefix_text} ${textVal}`;
+            if (item.suffix_text) textVal = `${textVal} ${item.suffix_text}`;
+            if (item.text_transform === 'uppercase') textVal = textVal.toUpperCase();
+            else if (item.text_transform === 'lowercase') textVal = textVal.toLowerCase();
 
             const hex = (item.text_color || '#000000').replace('#', '');
             const r = parseInt(hex.substring(0, 2), 16) || 0;
@@ -568,6 +639,57 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
                 doc.rect(itemX + startCol * cellW, itemY + row * cellH, (matrixSize - startCol) * cellW, cellH, 'F');
               }
             }
+          } else if (item.type === 'price_block') {
+            let rawPrice: any = undefined;
+            if (prod) {
+              if (item.binding_key) {
+                rawPrice = PricingEngine.getProductFieldValue(prod, item.binding_key);
+              } else {
+                rawPrice = PricingEngine.getSellingPrice(prod);
+              }
+            } else {
+              rawPrice = (item as any).fallback_price ?? 0;
+            }
+            if (rawPrice === undefined || rawPrice === null || rawPrice === '') {
+              return;
+            }
+            const currencySym = item.currency_symbol || '€';
+            const decimals = /FCFA|CFA|GNF|XOF|XAF/i.test(currencySym) ? 0 : 2;
+            const separator = item.decimal_separator ?? ',';
+            const { integerPart, decimalPart } = PricingEngine.splitPrice(rawPrice, separator, decimals);
+
+            const intFontSizePt = item.integer_style?.font_size_pt || 24;
+            const intHex = (item.integer_style?.text_color || '#000000').replace('#', '');
+            const r = parseInt(intHex.substring(0, 2), 16) || 0;
+            const g = parseInt(intHex.substring(2, 4), 16) || 0;
+            const b = parseInt(intHex.substring(4, 6), 16) || 0;
+
+            doc.setTextColor(r, g, b);
+            doc.setFont('helvetica', 'bold');
+
+            const align = item.alignment || 'left';
+            const currPos = item.currency_position || 'after';
+
+            let priceStr = `${integerPart}${decimals > 0 ? `${separator}${decimalPart}` : ''}`;
+            if (currPos === 'before') {
+              priceStr = `${currencySym} ${priceStr}`;
+            } else {
+              priceStr = `${priceStr} ${currencySym}`;
+            }
+
+            doc.setFontSize(intFontSizePt);
+            let textX = itemX;
+            if (align === 'center') textX = itemX + item.w_mm / 2;
+            else if (align === 'right') textX = itemX + item.w_mm;
+
+            let textY = itemY + intFontSizePt * 0.35;
+            if (item.valign === 'middle') {
+              textY = itemY + item.h_mm / 2 + intFontSizePt * 0.12;
+            } else if (item.valign === 'bottom') {
+              textY = itemY + item.h_mm - 0.5;
+            }
+
+            doc.text(priceStr, textX, textY, { align: align as any });
           } else if (item.type === 'tier_price') {
             doc.setDrawColor(203, 213, 225);
             doc.setFillColor(248, 250, 252);
@@ -590,45 +712,49 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
     return doc;
   };
 
-  // Generate and download Imposed PDF
-  const handleGeneratePdf = () => {
-    const doc = buildPdfDocument();
-    if (doc) {
-      doc.save(`etiquettes_imposees_${template.name.toLowerCase().replace(/\s+/g, '_')}.pdf`);
+  // Generate and save Imposed PDF via native OS dialog
+  const handleGeneratePdf = async () => {
+    const targetReport = PreFlightEngine.analyzeTemplate(template, effectivePrintItems[0], 'pdf');
+    if (!targetReport.passed) {
+      console.error("Export PDF refusé : le gabarit contient des erreurs bloquantes.", targetReport.issues);
+      return;
     }
-  };
-
-  // Direct Print to Physical Printer via iframe/blob
-  const handleDirectPrint = () => {
     const doc = buildPdfDocument();
     if (!doc) return;
-
-    try {
-      const blob = doc.output('blob');
-      const blobUrl = URL.createObjectURL(blob);
-
-      // Create hidden iframe to trigger native browser/physical print dialog
-      const printIframe = document.createElement('iframe');
-      printIframe.style.position = 'fixed';
-      printIframe.style.right = '0';
-      printIframe.style.bottom = '0';
-      printIframe.style.width = '0';
-      printIframe.style.height = '0';
-      printIframe.style.border = '0';
-      printIframe.src = blobUrl;
-
-      printIframe.onload = () => {
-        try {
-          printIframe.contentWindow?.focus();
-          printIframe.contentWindow?.print();
-        } catch {
-          window.open(blobUrl, '_blank');
-        }
-      };
-
-      document.body.appendChild(printIframe);
-    } catch {
-      window.print();
+    const arrayBuffer = doc.output('arraybuffer');
+    const filename = `etiquettes_imposees_${template.name.toLowerCase().replace(/\s+/g, '_')}.pdf`;
+    const savedPath = await desktopFileService.saveBinary(
+      filename,
+      new Uint8Array(arrayBuffer),
+      [{ name: 'Document PDF', extensions: ['pdf'] }]
+    );
+    if (savedPath) {
+      await api.jobInsert({
+        id: `job_pdf_${Date.now()}`,
+        template_id: template.id || '',
+        template_revision: template.revision || 1,
+        product_ids: effectivePrintItems.map((p) => p.id || ''),
+        format: 'pdf',
+        imposition_json: JSON.stringify(impositionConfig),
+        target: savedPath,
+        status: 'ready',
+        error: null,
+        created_at: new Date().toISOString(),
+        template_snapshot: template,
+        printed_products: effectivePrintItems.map((p) => ({
+          id: p.id,
+          ITEMNAME: p.ITEMNAME,
+          SELLING_PRICE: p.SELLING_PRICE,
+          PROMOPRICE: p.PROMOPRICE,
+          PRODUCT_SCAN: p.PRODUCT_SCAN,
+          PARTNO: p.PARTNO,
+        })),
+      });
+      AuditLogService.append({
+        action: 'EXPORT_PDF_IMPOSITION',
+        template_name: template.name,
+        details: `Planche PDF enregistrée : ${savedPath} (${effectivePrintItems.length} étiquettes)`,
+      });
     }
   };
 
@@ -762,19 +888,14 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
               )}
             </div>
 
-            <ContextTooltip
-              title="Impression Directe Navigateur"
-              content="Envoyer directement la planche d'étiquettes vers l'imprimante laser ou thermique par défaut"
-              category="Production"
+            <button
+              onClick={() => setShowJobHistory(true)}
+              className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-lg flex items-center gap-1.5 shadow-2xs transition"
+              title="Consulter l'historique des travaux d'impression et le spooler SQLite"
             >
-              <button
-                onClick={handleDirectPrint}
-                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 shadow-2xs transition"
-              >
-                <Printer className="w-3.5 h-3.5 text-white" />
-                <span>Imprimer Direct</span>
-              </button>
-            </ContextTooltip>
+              <History className="w-3.5 h-3.5 text-purple-600" />
+              <span>Spooler SQLite</span>
+            </button>
 
             <ContextTooltip
               title="Télécharger Planche PDF HD"
@@ -782,7 +903,7 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
               category="Production"
             >
               <button
-                onClick={handleGeneratePdf}
+                onClick={() => setExportConfirmTarget('pdf')}
                 className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 shadow-xs transition"
               >
                 <Download className="w-3.5 h-3.5" />
@@ -940,8 +1061,29 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
             </div>
           </div>
 
-          <div className="text-[11px] text-slate-400 font-mono hidden lg:block">
-            Workflow E-Studio v2.4 • Prêt pour l'impression
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border bg-white shadow-2xs">
+              <span className="text-slate-400">Pré-presse :</span>
+              {preFlightReport.status === 'ready' ? (
+                <span className="text-emerald-600 flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Conforme (300 DPI)</span>
+                </span>
+              ) : preFlightReport.status === 'warning' ? (
+                <span className="text-amber-600 flex items-center gap-1" title={preFlightReport.issues.map((i) => i.message).join('\n')}>
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>{preFlightReport.warningsCount} avertissement(s)</span>
+                </span>
+              ) : (
+                <span className="text-red-600 flex items-center gap-1" title={preFlightReport.issues.map((i) => i.message).join('\n')}>
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  <span>{preFlightReport.errorsCount} erreur(s)</span>
+                </span>
+              )}
+            </div>
+            <div className="text-[11px] text-slate-400 font-mono hidden lg:block">
+              Workflow E-Studio • Planche {template.name}
+            </div>
           </div>
         </div>
       </header>
@@ -1173,13 +1315,13 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
                   <button
                     onClick={() => {
                       setPrintScope('selected_only');
-                      handleDirectPrint();
+                      handleGeneratePdf();
                     }}
                     className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition"
-                    title="Imprimer directement cet article sélectionné"
+                    title="Générer le PDF pour cet article sélectionné"
                   >
-                    <Printer className="w-3.5 h-3.5" />
-                    <span>Imprimer cet article</span>
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>PDF cet article</span>
                   </button>
                 </div>
               )}
@@ -1381,9 +1523,9 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   template.default_imposition = impositionConfig;
-                  alert('La disposition de planche et les espacements ont été enregistrés dans le gabarit actuel.');
+                  await api.templateSave(template);
                 }}
                 className="w-full py-1.5 bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition"
               >
@@ -1608,10 +1750,14 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
                         <>
                           <div className="flex items-center justify-between text-[8px] font-bold text-slate-700">
                             <span className="truncate">{prod ? prod.ITEMNAME : `Emplacement #${slotIdx + 1}`}</span>
-                            {prod && <span className="text-blue-600">{prod.SELLING_PRICE} F</span>}
+                            {prod && (
+                              <span className="text-blue-600">
+                                {prod.SELLING_PRICE} {(template.items?.find((i: any) => (i as any).currency_symbol) as any)?.currency_symbol || '€'}
+                              </span>
+                            )}
                           </div>
                           <div className="flex items-center justify-between text-[7px] text-slate-400 font-mono">
-                            <span>{prod?.PRODUCT_SCAN || '3250390123456'}</span>
+                            <span>{prod?.PRODUCT_SCAN || '—'}</span>
                             <span>{template.width_mm}x{template.height_mm}mm</span>
                           </div>
                         </>
@@ -1725,7 +1871,11 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
                     </td>
                     <td className="p-2.5 text-slate-600">{p.CATEGORY_NAME || '—'}</td>
                     <td className="p-2.5">
-                      {p.TIERS && p.TIERS.length > 0 ? (
+                      {p.price_tiers && p.price_tiers.length > 0 ? (
+                        <span className="text-[11px] text-sky-700 font-medium">
+                          {p.price_tiers.map((t) => `${t.min_qty}+ : ${t.unit_price}`).join(' | ')}
+                        </span>
+                      ) : p.TIERS && p.TIERS.length > 0 ? (
                         <span className="text-[11px] text-sky-700 font-medium">
                           {p.TIERS.map((t) => `${t.qty}+ : ${t.unit_price}`).join(' | ')}
                         </span>
@@ -1882,7 +2032,10 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
               </button>
               <button
                 type="button"
-                onClick={handleExportZpl}
+                onClick={() => {
+                  setShowZplModal(false);
+                  setExportConfirmTarget('zpl');
+                }}
                 className="px-4 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg shadow-xs flex items-center gap-1.5 transition"
               >
                 <Download className="w-3.5 h-3.5" />
@@ -1892,6 +2045,158 @@ export const GenerationWorkspace: React.FC<GenerationWorkspaceProps> = ({
           </div>
         </div>
       )}
+
+      {/* Two-Tier Pre-Export Quality Verification & Confirmation Summary Modal */}
+      {exportConfirmTarget && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl max-w-lg w-full flex flex-col max-h-[85vh] overflow-hidden text-slate-100 font-sans">
+            <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-950">
+              <div className="flex items-center gap-2.5">
+                <div
+                  className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                    preFlightReport.status === 'ready'
+                      ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                      : preFlightReport.status === 'warning'
+                      ? 'bg-amber-950 text-amber-400 border border-amber-800'
+                      : 'bg-rose-950 text-rose-400 border border-rose-800'
+                  }`}
+                >
+                  <FileCheck className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Vérification Pré-Vol & Confirmation d'Export</h3>
+                  <p className="text-[11px] text-slate-400">Contrôle qualité avant génération du fichier</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setExportConfirmTarget(null)}
+                className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-4 text-xs">
+              {/* Export Parameters Summary */}
+              <div className="bg-slate-950 border border-slate-800 p-4 rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Format d'exportation :</span>
+                  <span className="font-bold text-white uppercase font-mono">
+                    {exportConfirmTarget === 'pdf' ? 'PDF (Planches multi-poses HD)' : 'ZPL (Thermique direct)'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Nombre d'étiquettes :</span>
+                  <span className="font-bold text-white font-mono">{effectivePrintItems.length} article(s)</span>
+                </div>
+                {exportConfirmTarget === 'pdf' && imposition && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">Nombre de planches / feuilles :</span>
+                    <span className="font-bold text-white font-mono">
+                      {Math.ceil(effectivePrintItems.length / Math.max(1, imposition.total_per_page))} feuille(s) ({imposition.cols}×{imposition.rows} poses)
+                    </span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Nom de fichier cible :</span>
+                  <span className="font-mono text-blue-400 text-[11px] truncate max-w-xs">
+                    {exportConfirmTarget === 'pdf'
+                      ? `etiquettes_imposees_${template.name.toLowerCase().replace(/\s+/g, '_')}.pdf`
+                      : `thermique_${template.name.toLowerCase().replace(/\s+/g, '_')}_${zplDpi}dpi.zpl`}
+                  </span>
+                </div>
+              </div>
+
+              {/* Quality Verification Status */}
+              <div className="space-y-2">
+                <span className="text-[11px] font-bold text-slate-400 block uppercase font-mono">
+                  Résultats des Contrôles Pré-Vol
+                </span>
+                {preFlightReport.status === 'ready' ? (
+                  <div className="bg-emerald-950/30 border border-emerald-800/50 p-3.5 rounded-xl flex items-center gap-2.5 text-emerald-300">
+                    <CheckCircle className="w-5 h-5 text-emerald-400 shrink-0" />
+                    <div>
+                      <p className="font-bold text-xs text-white">Gabarit 100% Conforme</p>
+                      <p className="text-[11px] text-emerald-200/80">
+                        Marges sécurisées respectées, champs de prix conformes et codes-barres valides.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div
+                      className={`p-3 rounded-xl border flex items-center gap-2 text-xs font-semibold ${
+                        preFlightReport.status === 'warning'
+                          ? 'bg-amber-950/40 border-amber-800 text-amber-300'
+                          : 'bg-rose-950/40 border-rose-800 text-rose-300'
+                      }`}
+                    >
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                      <span>
+                        {preFlightReport.errorsCount > 0
+                          ? `${preFlightReport.errorsCount} erreur(s) et ${preFlightReport.warningsCount} avertissement(s) détecté(s)`
+                          : `${preFlightReport.warningsCount} avertissement(s) de mise en page détecté(s)`}
+                      </span>
+                    </div>
+                    <div className="max-h-32 overflow-y-auto space-y-1.5 bg-slate-950 border border-slate-800 p-2.5 rounded-xl">
+                      {preFlightReport.issues.map((issue) => (
+                        <div key={issue.id} className="text-[11px] flex items-start gap-2 text-slate-300">
+                          <span
+                            className={`px-1 py-0.2 rounded text-[9px] font-mono font-bold uppercase shrink-0 mt-0.5 ${
+                              issue.severity === 'error' ? 'bg-rose-900 text-rose-200' : 'bg-amber-900 text-amber-200'
+                            }`}
+                          >
+                            {issue.severity}
+                          </span>
+                          <span className="leading-tight">{issue.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="px-5 py-3 border-t border-slate-800 bg-slate-950 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => setExportConfirmTarget(null)}
+                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                disabled={!preFlightReport.passed}
+                onClick={() => {
+                  if (!preFlightReport.passed) return;
+                  const target = exportConfirmTarget;
+                  setExportConfirmTarget(null);
+                  if (target === 'pdf') {
+                    handleGeneratePdf();
+                  } else if (target === 'zpl') {
+                    handleExportZpl();
+                  }
+                }}
+                className={`px-5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 shadow-xs transition ${
+                  preFlightReport.passed
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer'
+                    : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-60'
+                }`}
+                title={!preFlightReport.passed ? 'Export bloqué : corrigez les erreurs pré-vol' : 'Confirmer et enregistrer'}
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>{preFlightReport.passed ? 'Confirmer et Enregistrer' : 'Export Bloqué (Erreurs pré-vol)'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <PrintJobHistoryModal
+        isOpen={showJobHistory}
+        onClose={() => setShowJobHistory(false)}
+      />
     </div>
   );
 };

@@ -366,9 +366,6 @@ export interface CalibrationImageConfig {
   print_in_output: boolean; // whether to include in print/PDF output or keep as reference overlay only
 }
 
-export type ColorPaletteMode = 'full_color' | 'eink_bw' | 'eink_bwr' | 'eink_bwy' | 'eink_4color' | 'monochrome';
-export type DitheringMethod = 'none' | 'floyd_steinberg' | 'atkinson' | 'ordered';
-
 export interface CustomFont {
   id: string;
   name: string;
@@ -381,7 +378,7 @@ export interface CustomFont {
 export interface AuditLogEntry {
   id: string;
   timestamp: string;
-  user: string;
+  user?: string;
   action: string;
   product_id?: string;
   product_name?: string;
@@ -389,47 +386,6 @@ export interface AuditLogEntry {
   details: string;
   previous_snapshot?: any;
   new_snapshot?: any;
-}
-
-export interface EcoRenderingConfig {
-  enabled: boolean;
-  defer_minor_text_edits: boolean;
-  immediate_trigger_fields: string[]; // e.g. ['SELLING_PRICE', 'PROMOPRICE', 'PRODUCT_SCAN']
-  scheduled_window: 'weekly_batch' | 'nightly' | 'manual';
-}
-
-export type RulerPositionMode = 'floating' | 'window' | 'canvas' | 'sheet' | 'template';
-
-export interface RulerSettings {
-  mode: RulerPositionMode;
-  visible: boolean;
-  unit: 'mm' | 'cm' | 'inch' | 'pt';
-  step_mm: number; // 1, 5, 10
-  show_guides: boolean;
-}
-
-export interface DualPriceDisplayConfig {
-  enabled: boolean;
-  mode: 'ht_and_ttc' | 'dual_currency';
-  tax_rate?: number; // e.g. 20 for 20%
-  secondary_currency?: string; // e.g. "USD"
-  exchange_rate?: number; // e.g. 1.08
-  layout: 'side_by_side' | 'stacked';
-  primary_label?: string; // e.g. "TTC" or "EUR"
-  secondary_label?: string; // e.g. "HT" or "$"
-  secondary_font_size_ratio?: number; // e.g. 0.65
-}
-
-export interface BrandAwareConfig {
-  strip_brand_from_name: boolean;
-  strip_brand_from_description: boolean;
-  brand_placeholder_text?: string;
-}
-
-export interface BatchSpoolConfig {
-  batch_size: number; // e.g. 500
-  group_by_field: 'DEPT_NAME' | 'CATEGORY_NAME' | 'STORE_NAME' | 'VENDOR_NAME' | 'none';
-  sort_order: 'aisle_order' | 'alphabetical' | 'sku_order';
 }
 
 export interface LabelTemplate {
@@ -452,12 +408,42 @@ export interface LabelTemplate {
   background_image_locked?: boolean;
   background_image_in_output?: boolean;
   calibration_image?: CalibrationImageConfig | null;
-  blueprint?: BlueprintOverlayConfig | null;
-  color_palette_mode?: ColorPaletteMode;
-  dithering_method?: DitheringMethod;
-  brand_aware?: BrandAwareConfig;
   default_imposition?: ImpositionConfig;
   items: TemplateItem[];
+}
+
+export const CURRENT_SCHEMA_VERSION = 1;
+
+export function migrateTemplateSchema(raw: any): LabelTemplate {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('Gabarit invalide : objet attendu.');
+  }
+  const now = new Date().toISOString();
+  const schema_version = typeof raw.schema_version === 'number' && raw.schema_version >= 1 ? raw.schema_version : CURRENT_SCHEMA_VERSION;
+  
+  return {
+    id: String(raw.id || `tpl_${Date.now()}`),
+    revision: typeof raw.revision === 'number' ? raw.revision : 1,
+    created_at: raw.created_at || now,
+    updated_at: raw.updated_at || now,
+    schema_version,
+    name: String(raw.name || 'Gabarit sans titre').trim(),
+    width_mm: typeof raw.width_mm === 'number' && raw.width_mm > 0 ? raw.width_mm : 100,
+    height_mm: typeof raw.height_mm === 'number' && raw.height_mm > 0 ? raw.height_mm : 50,
+    inner_margins_mm: raw.inner_margins_mm || { top: 0, right: 0, bottom: 0, left: 0 },
+    outer_margins_mm: raw.outer_margins_mm || { top: 0, right: 0, bottom: 0, left: 0 },
+    bg_color: raw.bg_color || '#FFFFFF',
+    bg_opacity: typeof raw.bg_opacity === 'number' ? raw.bg_opacity : 1.0,
+    background_image_path: raw.background_image_path ?? null,
+    background_image_opacity: raw.background_image_opacity ?? 0.5,
+    background_image_fit: raw.background_image_fit ?? 'contain',
+    background_image_visible: raw.background_image_visible ?? false,
+    background_image_locked: raw.background_image_locked ?? true,
+    background_image_in_output: raw.background_image_in_output ?? false,
+    calibration_image: raw.calibration_image ?? null,
+    default_imposition: raw.default_imposition,
+    items: Array.isArray(raw.items) ? raw.items : [],
+  };
 }
 
 export type PrintJobStatus = 'draft' | 'ready' | 'sent' | 'failed';
@@ -467,12 +453,40 @@ export interface PrintJob {
   template_id: string;
   template_revision: number;
   product_ids: string[];
-  format: 'pdf' | 'zpl';
+  format: 'pdf' | 'zpl' | 'pptx' | 'esl';
   imposition_json: string;
   target: string;
   status: PrintJobStatus;
   error: string | null;
   created_at: string;
+  template_snapshot?: LabelTemplate;
+  printed_products?: Partial<ProductRecord>[];
+}
+
+export type AppView = 'home' | 'editor' | 'generation' | 'catalog';
+
+export interface TemplateSummary {
+  id: string;
+  name: string;
+  width_mm: number;
+  height_mm: number;
+  revision: number;
+  updated_at: string;
+}
+
+export interface UpsertResult {
+  inserted: number;
+  updated: number;
+  rejected: number;
+}
+
+export interface AuditRecord {
+  id: string;
+  at: string;
+  os_user: string;
+  action: string;
+  entity_id: string | null;
+  details: string;
 }
 
 export interface DomainField {
@@ -486,6 +500,7 @@ export interface DomainField {
 export interface PriceTier {
   qty: number;
   unit_price: number;
+  label?: string;
 }
 
 export interface PriceTierBreak {
@@ -519,6 +534,7 @@ export interface ProductRecord {
   SELLING_UNIT?: string;
   SELLING_PRICE: number;
   PROMOPRICE?: number;
+  LAST_SELLING_PRICE?: number;
   SUPPLIER?: string;
   ITEM_TYPE?: string;
   CASE_SIZE?: number;
@@ -680,6 +696,8 @@ export interface ImpositionCalculation {
   vertical_offset_mm: number;
   label_total_w_mm: number;
   label_total_h_mm: number;
+  fits_on_page?: boolean;
+  overflow_warning?: string;
 }
 
 export interface TooltipSettings {
@@ -698,9 +716,3 @@ export type ElementPlacementStrategy =
   | 'canvas_center'
   | 'fixed_classic';
 
-export interface UiPreferences {
-  tooltipSettings: TooltipSettings;
-  zoomMethod: ZoomMethod;
-  defaultZoom: number;
-  elementPlacementStrategy?: ElementPlacementStrategy;
-}

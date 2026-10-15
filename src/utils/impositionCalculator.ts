@@ -18,9 +18,13 @@ export class ImpositionCalculator {
     let page_w: number;
     let page_h: number;
 
-    if (config.page_size === 'CUSTOM' && config.custom_page_w_mm && config.custom_page_h_mm) {
-      page_w = config.custom_page_w_mm;
-      page_h = config.custom_page_h_mm;
+    if (config.page_size === 'CUSTOM') {
+      if (config.custom_page_w_mm && config.custom_page_h_mm && config.custom_page_w_mm > 0 && config.custom_page_h_mm > 0) {
+        page_w = config.custom_page_w_mm;
+        page_h = config.custom_page_h_mm;
+      } else {
+        throw new Error('Format personnalisé (CUSTOM) sélectionné : largeur et hauteur de feuille obligatoires.');
+      }
     } else {
       const rawDim = PAGE_DIMENSIONS_MM[config.page_size] || PAGE_DIMENSIONS_MM.A4;
       page_w = rawDim[0];
@@ -39,14 +43,20 @@ export class ImpositionCalculator {
     const marginTop = Math.max(0, config.margin_top_mm ?? 0);
     const marginBottom = Math.max(0, config.margin_bottom_mm ?? 0);
 
-    const available_w = Math.max(10, page_w - marginLeft - marginRight);
-    const available_h = Math.max(10, page_h - marginTop - marginBottom);
+    const available_w = Math.max(1, page_w - marginLeft - marginRight);
+    const available_h = Math.max(1, page_h - marginTop - marginBottom);
 
     const label_total_w_mm = template_w_mm + (outer_margins?.left || 0) + (outer_margins?.right || 0);
     const label_total_h_mm = template_h_mm + (outer_margins?.top || 0) + (outer_margins?.bottom || 0);
 
     if (label_total_w_mm <= 0 || label_total_h_mm <= 0) {
       throw new Error('Les dimensions de gabarit doivent être strictement positives.');
+    }
+
+    const fits_on_page = label_total_w_mm <= available_w && label_total_h_mm <= available_h;
+    let overflow_warning: string | undefined = undefined;
+    if (!fits_on_page) {
+      overflow_warning = `L'étiquette (${template_w_mm.toFixed(1)}×${template_h_mm.toFixed(1)} mm) dépasse l'espace imprimable utile de la planche (${available_w.toFixed(1)}×${available_h.toFixed(1)} mm).`;
     }
 
     // Number of columns & rows that fit in available printable space
@@ -73,6 +83,8 @@ export class ImpositionCalculator {
       vertical_offset_mm,
       label_total_w_mm,
       label_total_h_mm,
+      fits_on_page,
+      overflow_warning,
     };
   }
 }

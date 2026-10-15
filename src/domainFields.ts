@@ -25,7 +25,9 @@ export const DOMAIN_FIELDS: ExtendedDomainField[] = [
   { key: 'SELLING_UNIT', label: 'Unité de Vente (SELLING UNIT)', value_type: 'text', aliases: ['UNITE', 'UNIT', 'UVC', 'SELLING_UNIT'], is_volatile: true, category: 'pricing' },
   { key: 'SELLING_PRICE', label: 'Prix de Vente (SELLING PRICE)', value_type: 'currency', aliases: ['PRICE', 'PRIX', 'PRIX_VENTE', 'PV', 'PRIX_UNITAIRE', 'PRIX_STD'], numeric: true, is_volatile: true, category: 'pricing' },
   { key: 'PROMOPRICE', label: 'Prix Promo (PROMOPRICE)', value_type: 'currency', aliases: ['PROMO PRICE', 'PROMO', 'PRIX_PROMO', 'PV_PROMO', 'NOUVEAU_PRIX', 'PRIX_CHOC'], numeric: true, is_volatile: true, category: 'pricing' },
+  { key: 'PROMO_START_DATE', label: 'Début de Promo (PROMO START DATE)', value_type: 'date', aliases: ['PROMO_START', 'DATE_DEBUT_PROMO', 'DEBUT_PROMO'], is_volatile: true, category: 'pricing' },
   { key: 'PROMO_END_DATE', label: 'Fin de Promo (PROMO END DATE)', value_type: 'date', aliases: ['PROMO_END', 'DATE_FIN_PROMO', 'PROMO_EXPIRATION', 'FIN_PROMO'], is_volatile: true, category: 'pricing' },
+  { key: 'PROMO_PERIOD', label: 'Période Promo (PROMO PERIOD)', value_type: 'text', aliases: ['PERIODE_PROMO', 'PROMO_DATES'], is_volatile: true, category: 'pricing' },
   { key: 'LAST_SELLING_PRICE', label: 'Dernier Prix (LAST SELLING PRICE)', value_type: 'currency', aliases: ['ANCIEN_PRIX', 'PREVIOUS_PRICE', 'PRIX_AVANT', 'LAST_PRICE'], numeric: true, is_volatile: true, category: 'pricing' },
   { key: 'DISCOUNT_PCT', label: 'Taux de Remise (%)', value_type: 'number', aliases: ['REMISE', 'POURCENTAGE', 'DISCOUNT', 'REDUC', 'PROMO_%', 'TAUX_REMISE'], numeric: true, is_volatile: true, category: 'pricing' },
   { key: 'PROMO_LABEL', label: 'Libellé Promo (BOGO / Flash)', value_type: 'promo', aliases: ['OFFRE', 'PROMO_TEXT', 'PROMOTION', 'TYPE_PROMO', 'MESSAGE_PROMO', 'BADGE'], category: 'pricing' },
@@ -39,6 +41,8 @@ export const DOMAIN_FIELDS: ExtendedDomainField[] = [
   { key: 'ITEM_TYPE', label: 'Type Article (ITEM_TYPE)', value_type: 'text', aliases: ['TYPE', 'NATURE_ARTICLE'], category: 'logistics' },
   { key: 'CASE_SIZE', label: 'Colisage / PCB (CASE SIZE)', value_type: 'number', aliases: ['CASE QTY', 'COLISAGE', 'PCB', 'CARTON_QTY'], numeric: true, category: 'logistics' },
   { key: 'CASE_UNIT', label: 'Unité Carton (CASE UNIT)', value_type: 'text', aliases: ['UNITE_COLIS', 'CARTON_UNIT'], category: 'logistics' },
+  { key: 'NET_WEIGHT_KG', label: 'Poids Net (kg)', value_type: 'number', aliases: ['POIDS_NET', 'NET_WEIGHT', 'POIDS_KG', 'WEIGHT'], numeric: true, category: 'logistics' },
+  { key: 'VOLUME_L', label: 'Volume (L)', value_type: 'number', aliases: ['VOLUME', 'CONTENANCE_L', 'LITRES'], numeric: true, category: 'logistics' },
   { key: 'ORIGIN_COUNTRY', label: 'Pays d\'Origine', value_type: 'text', aliases: ['ORIGINE', 'PAYS', 'ORIGIN', 'PROVENANCE'], category: 'logistics' },
 
   // 5. Tax & Fiscal

@@ -4,6 +4,7 @@ import { TierEngine } from './tierEngine';
 import { PricingEngine } from './pricingEngine';
 import { renderBarcodeToDataUrl } from './barcodeGenerator';
 import { renderQrToDataUrl } from './qrGenerator';
+import { LabelResolutionEngine } from './labelResolutionEngine';
 
 /**
  * Converts mm to inches for pptxgenjs layout
@@ -70,47 +71,65 @@ export class PptxExporter {
           line: { color: 'CCCCCC', width: 0.5, dashType: 'dash' },
         });
 
+        // Resolve label with single unified semantic model
+        const resolvedLabel = LabelResolutionEngine.resolveLabel(template, prod, 'pptx', { sample: false });
+
         // Add each template item to the slide
-        for (const item of template.items) {
-          const itemX_in = labelX_in + mmToIn(item.x_mm);
-          const itemY_in = labelY_in + mmToIn(item.y_mm);
-          const itemW_in = mmToIn(item.w_mm);
-          const itemH_in = mmToIn(item.h_mm);
+        for (const resolvedItem of resolvedLabel.items) {
+          if (!resolvedItem.visible) continue;
+          const item = resolvedItem.rawItem as any;
 
-          switch (item.type) {
-            case 'text': {
-              let textVal = item.text || '';
-              if (item.binding_key && prod[item.binding_key] !== undefined) {
-                const raw = prod[item.binding_key];
-                textVal = typeof raw === 'number' ? raw.toLocaleString('fr-FR') : String(raw);
+          const itemX_in = labelX_in + mmToIn(resolvedItem.x_mm);
+          const itemY_in = labelY_in + mmToIn(resolvedItem.y_mm);
+          const itemW_in = mmToIn(resolvedItem.w_mm);
+          const itemH_in = mmToIn(resolvedItem.h_mm);
+
+          switch (resolvedItem.type) {
+            case 'price_block': {
+              if (!resolvedItem.resolvedPrice || resolvedItem.resolvedPrice.status !== 'valid') {
+                break;
               }
-              if (item.prefix_text) textVal = `${item.prefix_text} ${textVal}`;
-              if (item.suffix_text) textVal = `${textVal} ${item.suffix_text}`;
+              const priceText = resolvedItem.resolvedPrice.formattedText;
+              slide.addText(priceText, {
+                x: itemX_in,
+                y: itemY_in,
+                w: itemW_in,
+                h: itemH_in,
+                fontSize: Math.max(8, (item as any).integer_style?.font_size_pt || 24),
+                fontFace: (item as any).font_family || 'Calibri',
+                bold: true,
+                color: ((item as any).integer_style?.text_color || '#000000').replace('#', ''),
+                align: (item.alignment === 'justify' ? 'left' : item.alignment) || 'left',
+                valign: item.valign || 'top',
+              });
+              break;
+            }
 
-              if (item.text_transform === 'uppercase') textVal = textVal.toUpperCase();
-              else if (item.text_transform === 'lowercase') textVal = textVal.toLowerCase();
+            case 'text': {
+              const textVal = resolvedItem.resolvedText || '';
+              if (!textVal) break;
 
               slide.addText(textVal, {
                 x: itemX_in,
                 y: itemY_in,
                 w: itemW_in,
                 h: itemH_in,
-                fontSize: Math.max(6, item.font_size_pt),
-                fontFace: item.font_family || 'Calibri',
-                bold: item.font_weight === 'bold' || item.font_weight === '800',
-                italic: item.font_style === 'italic',
-                underline: item.text_decoration === 'underline' ? { style: 'sng' } : undefined,
-                strike: item.text_decoration === 'line-through',
-                color: (item.text_color || '#000000').replace('#', ''),
-                align: (item.alignment === 'justify' ? 'left' : item.alignment) || 'left',
-                valign: item.valign || 'top',
-                fill: item.fill_color ? { color: item.fill_color.replace('#', '') } : undefined,
+                fontSize: Math.max(6, resolvedItem.fontSizePt),
+                fontFace: resolvedItem.fontFamily || 'Calibri',
+                bold: resolvedItem.fontWeight === 'bold' || resolvedItem.fontWeight === '800',
+                italic: resolvedItem.fontStyle === 'italic',
+                underline: resolvedItem.textDecoration === 'underline' ? { style: 'sng' } : undefined,
+                strike: resolvedItem.textDecoration === 'line-through',
+                color: (resolvedItem.textColor || '#000000').replace('#', ''),
+                align: (resolvedItem.alignment === 'justify' ? 'left' : resolvedItem.alignment) || 'left',
+                valign: resolvedItem.valign || 'top',
+                fill: resolvedItem.fillColor ? { color: resolvedItem.fillColor.replace('#', '') } : undefined,
                 line:
-                  item.border_width && item.border_width > 0
-                    ? { color: (item.border_color || '#000000').replace('#', ''), width: item.border_width }
+                  resolvedItem.borderWidth && resolvedItem.borderWidth > 0
+                    ? { color: (resolvedItem.borderColor || '#000000').replace('#', ''), width: resolvedItem.borderWidth }
                     : undefined,
-                wrap: item.wrap,
-                charSpacing: item.letter_spacing_pt ? item.letter_spacing_pt * 20 : undefined,
+                wrap: (item as any).wrap,
+                charSpacing: (item as any).letter_spacing_pt ? (item as any).letter_spacing_pt * 20 : undefined,
               });
               break;
             }
@@ -166,11 +185,14 @@ export class PptxExporter {
             }
 
             case 'barcode': {
-              const code = PricingEngine.resolveBarcodeValue(item, prod);
+              const code = resolvedItem.resolvedBarcode?.value || '';
+              if (!code || resolvedItem.resolvedBarcode?.status !== 'valid') {
+                break;
+              }
               const imgData = renderBarcodeToDataUrl(
                 code,
-                item.barcode_type || 'ean13',
-                Boolean(item.show_text),
+                resolvedItem.resolvedBarcode?.barcodeType || 'ean13',
+                Boolean(resolvedItem.resolvedBarcode?.showText),
                 item.bar_color || '#000000'
               );
 
@@ -206,7 +228,8 @@ export class PptxExporter {
             }
 
             case 'qrcode': {
-              const qrContent = PricingEngine.resolveQrContent(item, prod);
+              const qrContent = resolvedItem.resolvedQr?.value || '';
+              if (!qrContent) break;
               const imgData = renderQrToDataUrl(
                 qrContent,
                 item.module_color || '#000000',

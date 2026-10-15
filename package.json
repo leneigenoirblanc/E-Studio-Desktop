@@ -10,6 +10,8 @@
     "lint": "tsc --noEmit",
     "preview": "vite preview --host 0.0.0.0 --port 3000",
     "tauri": "tauri",
+    "tauri dev": "tauri dev",
+    "tauri build": "tauri build",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },
@@ -29,7 +31,6 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@nanonets/graft": "^0.20.0",
     "@tailwindcss/vite": "^4.0.9",
     "@tauri-apps/cli": "^2.12.1",
     "@types/react": "^18.3.18",

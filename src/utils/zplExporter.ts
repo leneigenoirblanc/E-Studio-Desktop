@@ -1,5 +1,7 @@
 import { LabelTemplate, ProductRecord } from '../types';
 import { PricingEngine } from './pricingEngine';
+import { desktopFileService } from '../services/desktopFileService';
+import { LabelResolutionEngine } from './labelResolutionEngine';
 
 export interface ZplConfig {
   dpi: 203 | 300 | 600;
@@ -19,6 +21,18 @@ export class ZplExporter {
   }
 
   /**
+   * Escapes text for ZPL Field Hex (^FH) and prevents command injection (^, ~, _)
+   */
+  static escapeZplText(text: string): string {
+    if (!text) return '';
+    return text
+      .replace(/_/g, '_5f')
+      .replace(/\^/g, '_5e')
+      .replace(/~/g, '_7e')
+      .replace(/[\r\n]+/g, ' ');
+  }
+
+  /**
    * Generates a single ZPL string for a specific product and template
    */
   static generateLabelZpl(
@@ -33,10 +47,15 @@ export class ZplExporter {
     const labelHeightDots = ZplExporter.mmToDots(template.height_mm, dpi);
 
     lines.push('^XA');
+    // Enable UTF-8 encoding support
+    lines.push('^CI28');
+
     if (includeComments) {
+      const cleanTplName = (template.name || '').replace(/[\^~\r\n]/g, ' ');
+      const cleanArtName = (record.ITEMNAME || '').replace(/[\^~\r\n]/g, ' ');
       lines.push(`^FX --- E-STUDIO GENERATED ZPL II ---`);
-      lines.push(`^FX Template: ${template.name} (${template.width_mm}x${template.height_mm} mm)`);
-      lines.push(`^FX Article: ${record.ITEMNAME}`);
+      lines.push(`^FX Template: ${cleanTplName} (${template.width_mm}x${template.height_mm} mm)`);
+      lines.push(`^FX Article: ${cleanArtName}`);
     }
 
     // Label dimensions and darkness
@@ -45,9 +64,13 @@ export class ZplExporter {
     lines.push(`~SD${darkness}`);
     lines.push(`^LH0,0`);
 
+    // Resolve label through unified canonical engine
+    const resolvedLabel = LabelResolutionEngine.resolveLabel(template, record, 'zpl', { sample: false });
+
     // Render elements
-    for (const item of template.items) {
-      if (!PricingEngine.shouldDisplayItem(item, record)) continue;
+    for (const item of resolvedLabel.items) {
+      if (!item.visible) continue;
+      const rawItem = item.rawItem;
 
       const x = ZplExporter.mmToDots(item.x_mm, dpi);
       const y = ZplExporter.mmToDots(item.y_mm, dpi);
@@ -56,65 +79,85 @@ export class ZplExporter {
 
       switch (item.type) {
         case 'text': {
-          const rawText = PricingEngine.resolveCalculatedText(item, record);
-          let displayText = `${item.prefix_text || ''}${rawText}${item.suffix_text || ''}`;
-          if (item.is_price && item.currency_symbol) {
-            displayText = item.currency_position === 'before' 
-              ? `${item.currency_symbol} ${displayText}` 
-              : `${displayText} ${item.currency_symbol}`;
-          }
+          const displayText = item.resolvedText || '';
+          if (!displayText) break;
 
           // Font height based on pt
-          const fontHeightDots = Math.max(12, Math.round(item.font_size_pt * (dpi / 72) * 0.8));
+          const fontHeightDots = Math.max(12, Math.round(item.fontSizePt * (dpi / 72) * 0.8));
           const fontWidthDots = Math.round(fontHeightDots * 0.65);
+          const escapedText = ZplExporter.escapeZplText(displayText);
 
           // If background fill exists, draw rectangle first
-          if (item.fill_color && item.fill_color !== 'transparent') {
+          if (item.fillColor && item.fillColor !== 'transparent' && item.fillColor !== '#FFFFFF') {
             lines.push(`^FO${x},${y}^GB${w},${h},${h},B,0^FS`);
             // White text on black box
-            lines.push(`^FO${x + 4},${y + 4}^A0N,${fontHeightDots},${fontWidthDots}^FR^FD${displayText}^FS`);
+            lines.push(`^FO${x + 4},${y + 4}^A0N,${fontHeightDots},${fontWidthDots}^FR^FH^FD${escapedText}^FS`);
           } else {
-            lines.push(`^FO${x},${y}^A0N,${fontHeightDots},${fontWidthDots}^FD${displayText}^FS`);
+            lines.push(`^FO${x},${y}^A0N,${fontHeightDots},${fontWidthDots}^FH^FD${escapedText}^FS`);
           }
           break;
         }
 
-        case 'barcode': {
-          const rawCode = PricingEngine.resolveBarcodeValue(item, record);
-          const cleanCode = (rawCode || '1234567890128').replace(/\D/g, '');
-          const barcodeH = Math.max(20, h - (item.show_text ? 20 : 0));
+        case 'price_block': {
+          if (!item.resolvedPrice || item.resolvedPrice.status !== 'valid') {
+            break;
+          }
+          const priceText = item.resolvedPrice.formattedText;
+          const fontHeightDots = Math.max(16, Math.round(((rawItem as any).integer_style?.font_size_pt || 24) * (dpi / 72) * 0.8));
+          const fontWidthDots = Math.round(fontHeightDots * 0.65);
+          const escapedPrice = ZplExporter.escapeZplText(priceText);
 
-          if (item.barcode_type === 'ean13') {
-            lines.push(`^FO${x},${y}^BEN,${barcodeH},${item.show_text ? 'Y' : 'N'},N^FD${cleanCode.slice(0, 13)}^FS`);
+          lines.push(`^FO${x},${y}^A0N,${fontHeightDots},${fontWidthDots}^FH^FD${escapedPrice}^FS`);
+          break;
+        }
+
+        case 'barcode': {
+          const barcodeData = item.resolvedBarcode;
+          if (!barcodeData || barcodeData.status !== 'valid') {
+            console.warn(`[ZPL] Invalid barcode for item ${item.id} - skipped`);
+            break;
+          }
+          const rawCode = barcodeData.value;
+          const cleanCode = (rawCode || '').replace(/\D/g, '');
+          const barcodeH = Math.max(20, h - (barcodeData.showText ? 20 : 0));
+
+          if (barcodeData.barcodeType === 'ean13') {
+            lines.push(`^FO${x},${y}^BEN,${barcodeH},${barcodeData.showText ? 'Y' : 'N'},N^FD${cleanCode.slice(0, 13)}^FS`);
           } else {
-            // Code 128
-            lines.push(`^FO${x},${y}^BY2,3,${barcodeH}^BCN,${barcodeH},${item.show_text ? 'Y' : 'N'},N,N^FD>:${rawCode}^FS`);
+            // Code 128 with ^FH escaping
+            const escapedCode = ZplExporter.escapeZplText(rawCode);
+            lines.push(`^FO${x},${y}^BY2,3,${barcodeH}^BCN,${barcodeH},${barcodeData.showText ? 'Y' : 'N'},N,N^FH^FD>:${escapedCode}^FS`);
           }
           break;
         }
 
         case 'qrcode': {
-          const qrData = PricingEngine.resolveQrContent(item, record);
+          const qrData = item.resolvedQr?.value;
+          if (!qrData) break;
           const mag = Math.max(2, Math.min(10, Math.round(w / 35)));
-          lines.push(`^FO${x},${y}^BQN,2,${mag}^FDLA,${qrData}^FS`);
+          const escapedQr = ZplExporter.escapeZplText(qrData);
+          lines.push(`^FO${x},${y}^BQN,2,${mag}^FH^FDLA,${escapedQr}^FS`);
           break;
         }
 
         case 'shape': {
-          const borderThick = Math.max(1, ZplExporter.mmToDots(item.border_width || 1, dpi));
-          const radiusDots = Math.round(ZplExporter.mmToDots(item.corner_radius || 0, dpi) / 2);
-          const isFilled = item.fill_color && item.fill_color !== '#FFFFFF' && item.fill_color !== 'transparent';
+          const rawShape = item.rawItem as any;
+          const borderThick = Math.max(1, ZplExporter.mmToDots(item.borderWidth || rawShape.border_width || 1, dpi));
+          const radiusDots = Math.round(ZplExporter.mmToDots(rawShape.corner_radius || 0, dpi) / 2);
+          const isFilled = item.fillColor && item.fillColor !== '#FFFFFF' && item.fillColor !== 'transparent';
           lines.push(`^FO${x},${y}^GB${w},${h},${isFilled ? h : borderThick},B,${Math.min(8, radiusDots)}^FS`);
           break;
         }
 
         case 'line': {
-          const thick = Math.max(1, ZplExporter.mmToDots(item.thickness || 1, dpi));
+          const rawLine = item.rawItem as any;
+          const thick = Math.max(1, ZplExporter.mmToDots(rawLine.thickness || 1, dpi));
           lines.push(`^FO${x},${y}^GB${w},${thick},${thick},B,0^FS`);
           break;
         }
 
         default:
+          console.warn(`[ZPL] Non-representable element type "${item.type}" ignored on ZPL target (id: ${item.id})`);
           break;
       }
     }
@@ -137,17 +180,12 @@ export class ZplExporter {
   }
 
   /**
-   * Triggers download of the generated .zpl file
+   * Saves the generated .zpl file to local disk
    */
-  static downloadZplFile(filename: string, content: string) {
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename.endsWith('.zpl') ? filename : `${filename}.zpl`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+  static async downloadZplFile(filename: string, content: string): Promise<string | null> {
+    const finalName = filename.endsWith('.zpl') ? filename : `${filename}.zpl`;
+    return await desktopFileService.saveText(finalName, content, [
+      { name: 'Fichier ZPL', extensions: ['zpl', 'txt'] },
+    ]);
   }
 }

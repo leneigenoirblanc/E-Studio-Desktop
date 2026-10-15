@@ -17,28 +17,32 @@ export const DEFAULT_FONTS: CustomFont[] = [
   { id: 'font-courier', name: 'Courier New', family: '"Courier New", monospace', source: 'system', category: 'monospace' },
 ];
 
-const FONT_STORAGE_KEY = 'estudio_custom_fonts_v1';
+import { api } from '../services/api';
+
+let customFontsCache: CustomFont[] = [];
+
+// Load custom fonts from SQLite kv on init
+api.prefsGet('estudio_custom_fonts_v1').then((saved) => {
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        customFontsCache = parsed;
+      }
+    } catch {}
+  }
+}).catch(() => {});
 
 export function getLoadedFonts(): CustomFont[] {
-  try {
-    const saved = localStorage.getItem(FONT_STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return [...DEFAULT_FONTS, ...parsed];
-      }
-    }
-  } catch {
-    // fallback
-  }
-  return DEFAULT_FONTS;
+  return [...DEFAULT_FONTS, ...customFontsCache];
 }
 
 export function saveCustomFont(font: CustomFont): void {
   try {
-    const customOnly = getLoadedFonts().filter(f => f.source === 'custom_upload');
-    const updated = [...customOnly.filter(f => f.id !== font.id), font];
-    localStorage.setItem(FONT_STORAGE_KEY, JSON.stringify(updated));
+    customFontsCache = [...customFontsCache.filter(f => f.id !== font.id), font];
+    api.prefsSet('estudio_custom_fonts_v1', JSON.stringify(customFontsCache)).catch((e) => {
+      console.error('Failed to save custom font to SQLite kv', e);
+    });
 
     // If web font URL provided, inject <link> or @font-face
     if (font.url) {
@@ -58,9 +62,10 @@ export function saveCustomFont(font: CustomFont): void {
 
 export function removeCustomFont(fontId: string): void {
   try {
-    const customOnly = getLoadedFonts().filter(f => f.source === 'custom_upload');
-    const filtered = customOnly.filter(f => f.id !== fontId);
-    localStorage.setItem(FONT_STORAGE_KEY, JSON.stringify(filtered));
+    customFontsCache = customFontsCache.filter(f => f.id !== fontId);
+    api.prefsSet('estudio_custom_fonts_v1', JSON.stringify(customFontsCache)).catch((e) => {
+      console.error('Failed to remove custom font from SQLite kv', e);
+    });
   } catch (e) {
     console.error('Failed to remove custom font', e);
   }
